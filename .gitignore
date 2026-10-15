@@ -1,0 +1,61 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Package/build files
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer files
+*.exe
+*.msi
+*.whl
+*.deb
+*.rpm
+*.tar
+*.gz
+*.zip
+*.7z
+*.rar
+
+# IDE and editor
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Logs
+*.log
+logs/
+
+# Test and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local database files
+*.sqlite
+*.sqlite3
+*.db
