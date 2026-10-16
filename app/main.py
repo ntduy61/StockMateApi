@@ -269,7 +269,7 @@ def get_stocks(
             to_dict(
                 stock,
                 ["id", "symbol", "name", "exchange",
-                 "industry", "status"]
+                 "industry", "status", "reference_price", "current_price", "change_percent"]
             )
             for stock in items
         ],
@@ -287,12 +287,11 @@ def get_stock(symbol: str, db: Session = Depends(get_db)):
 
     if not stock:
         raise HTTPException(404, "Không tìm thấy cổ phiếu")
-
     return to_dict(
         stock,
         ["id", "symbol", "name", "exchange", "industry",
          "company_type", "status", "listed_date", "website",
-         "description"]
+         "description", "reference_price", "current_price", "change_percent"]
     )
 
 
