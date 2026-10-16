@@ -8,21 +8,19 @@ Database: MariaDB
 """
 
 from pathlib import Path
-
 import pandas as pd
 from vnstock import Listing
-
 from sqlalchemy import func
-
-
 import time
 import logging
 from datetime import date, timedelta
-
 from sqlalchemy import select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from vnstock import Quote, Fundamental, Trading
+from decimal import Decimal
+from sqlalchemy.exc import SQLAlchemyError
 
-from vnstock import Quote, Fundamental
+
 
 from app.database import SessionLocal
 from app.models import Stock, StockPrice, StockFinancial, StockValuation
@@ -36,6 +34,110 @@ EXCHANGE_MAPPING = {
     "HNX": "HNX",
     "UPCOM": "UPCOM",
 }
+
+def get_stock_info(symbol: str):
+    listing = Listing(source="VCI")
+    df = listing.symbols_by_exchange()
+
+    symbol = symbol.strip().upper()
+
+    stock = df[df["symbol"] == symbol]
+
+    if stock.empty:
+        print(f"Không tìm thấy mã cổ phiếu: {symbol}")
+        return
+
+    print(f"Thông tin cổ phiếu {symbol}:")
+    for column, value in stock.iloc[0].items():
+        print(f"{column}: {value}")
+
+
+
+
+def get_reference_price(symbol: str) -> bool:
+    """Lấy giá từ VCI và cập nhật 3 cột trong bảng stocks."""
+
+    symbol = symbol.strip().upper()
+
+    try:
+        trading = Trading(source="VCI", symbol=symbol)
+        df = trading.price_board(symbols_list=[symbol])
+
+        if df is None or df.empty:
+            print(f"[PRICE] {symbol}: Không có dữ liệu VCI")
+            return False
+
+        # Lọc đúng mã cổ phiếu vì bảng giá có thể chứa nhiều mã
+        symbol_col = ("listing", "symbol")
+        if symbol_col not in df.columns:
+            print(f"[PRICE] {symbol}: Không tìm thấy cột symbol")
+            return False
+
+        matched = df[df[symbol_col].astype(str).str.upper() == symbol]
+
+        if matched.empty:
+            print(f"[PRICE] {symbol}: Không tìm thấy mã trong bảng giá")
+            return False
+
+        row = matched.iloc[0]
+
+        reference_price = row[("match", "reference_price")]
+        current_price = row[("match", "match_price")]
+
+        # Kiểm tra dữ liệu rỗng/NaN trước khi cập nhật
+        if pd.isna(reference_price) or pd.isna(current_price):
+            print(f"[PRICE] {symbol}: Giá tham chiếu hoặc giá khớp bị trống")
+            return False
+
+        reference_price = Decimal(str(reference_price))
+        current_price = Decimal(str(current_price))
+
+        if reference_price <= 0 or current_price < 0:
+            print(f"[PRICE] {symbol}: Giá không hợp lệ")
+            return False
+
+        change_percent = (
+            (current_price - reference_price) / reference_price
+        ) * Decimal("100")
+
+        # Chỉ cập nhật mã đã tồn tại trong stocks
+        db = SessionLocal()
+
+        try:
+            stock = db.scalar(
+                select(Stock).where(Stock.symbol == symbol)
+            )
+
+            if stock is None:
+                print(f"[PRICE] {symbol}: Không tồn tại trong stocks")
+                return False
+
+            stock.reference_price = reference_price
+            stock.current_price = current_price
+            stock.change_percent = change_percent
+
+            db.commit()
+
+            print(
+                f"[PRICE] {symbol}: "
+                f"ref={reference_price}, "
+                f"current={current_price}, "
+                f"change={change_percent:.2f}%"
+            )
+            return True
+
+        except SQLAlchemyError:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    except Exception as e:
+        print(f"[PRICE] {symbol}: Lỗi đồng bộ - {e}")
+        return False
+
+
+
 
 
 def fetch_stocks():
@@ -162,7 +264,7 @@ def sync_stocks():
         db.close()
 
 def sync_latest_price(symbol: str):
-    """Đồng bộ giá phiên gần nhất của một mã cổ phiếu."""
+    """Đồng bộ giá phiên gần nhất nếu trading_date chưa tồn tại trong DB."""
 
     symbol = symbol.strip().upper()
     end_date = date.today()
@@ -196,6 +298,21 @@ def sync_latest_price(symbol: str):
 
         trading_date = pd.to_datetime(latest["time"]).date()
 
+        # Kiểm tra ngày giao dịch đã tồn tại trong DB chưa
+        existing = db.scalar(
+            select(StockPrice.id).where(
+                StockPrice.stock_id == stock.id,
+                StockPrice.trading_date == trading_date,
+            )
+        )
+
+        if existing is not None:
+            print(
+                f"[PRICE] {symbol}: {trading_date} đã tồn tại, "
+                "bỏ qua insert"
+            )
+            return True
+
         def number(value):
             if pd.isna(value):
                 return None
@@ -217,23 +334,15 @@ def sync_latest_price(symbol: str):
             "value_traded": number(latest.get("value")),
         }
 
-        stmt = mysql_insert(StockPrice.__table__).values([row])
-
-        stmt = stmt.on_duplicate_key_update(
-            open_price=stmt.inserted.open_price,
-            high_price=stmt.inserted.high_price,
-            low_price=stmt.inserted.low_price,
-            close_price=stmt.inserted.close_price,
-            adjusted_close=stmt.inserted.adjusted_close,
-            volume=stmt.inserted.volume,
-            value_traded=stmt.inserted.value_traded,
+        # Chỉ insert khi chưa tồn tại ngày giao dịch
+        db.execute(
+            mysql_insert(StockPrice.__table__).values([row])
         )
 
-        db.execute(stmt)
         db.commit()
 
         print(
-            f"[PRICE] {symbol}: {trading_date}, "
+            f"[PRICE] {symbol}: đã insert {trading_date}, "
             f"close={row['close_price']}"
         )
 
@@ -247,7 +356,38 @@ def sync_latest_price(symbol: str):
     finally:
         db.close()
 
+def sync_all_latest_prices(delay=1.5):
+    """Đồng bộ giá phiên gần nhất của tất cả mã cổ phiếu."""
 
+    db = SessionLocal()
+
+    try:
+        symbols = db.scalars(
+            select(Stock.symbol).order_by(Stock.symbol)
+        ).all()
+    finally:
+        db.close()
+
+    total = len(symbols)
+    success = 0
+    failed = 0
+
+    print(f"[SCHEDULER] Bắt đầu đồng bộ giá cho {total} mã")
+
+    for index, symbol in enumerate(symbols, start=1):
+        print(f"\n[PRICE {index}/{total}] {symbol}")
+
+        if sync_latest_price(symbol):
+            success += 1
+        else:
+            failed += 1
+
+        time.sleep(delay)
+
+    print(
+        f"\n[SCHEDULER] Hoàn tất: tổng {total}, "
+        f"thành công {success}, thất bại {failed}"
+    )
 
 def sync_financial_ratios(symbol: str):
     """Đồng bộ EPS, P/E, ROE, ROA, ROIC theo năm."""
@@ -431,7 +571,7 @@ def sync_all_market_data(limit=None, delay=1.5):
     for index, symbol in enumerate(symbols, start=1):
         print(f"\n[{index}/{total}] {symbol}")
 
-        sync_latest_price(symbol)
+        get_reference_price(symbol)
         time.sleep(delay)
 
         sync_financial_ratios(symbol)
@@ -439,7 +579,42 @@ def sync_all_market_data(limit=None, delay=1.5):
 
     print("\nĐã hoàn tất quá trình đồng bộ.")
 
+def sync_all_price_stock_data(limit=None, delay=1.5):
+    """Đồng bộ giá của các mã đã lưu trong stocks."""
 
+    db = SessionLocal()
+
+    try:
+        stmt = select(Stock.symbol).order_by(Stock.symbol)
+
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        symbols = db.scalars(stmt).all()
+    finally:
+        db.close()
+
+    total = len(symbols)
+    success = 0
+    failed = 0
+
+    print(f"Bắt đầu đồng bộ giá cho {total} mã")
+
+    for index, symbol in enumerate(symbols, start=1):
+        print(f"\n[{index}/{total}] {symbol}")
+
+        if get_reference_price(symbol):
+            success += 1
+        else:
+            failed += 1
+
+        if index < total:
+            time.sleep(delay)
+
+    print(
+        f"\nHoàn tất đồng bộ giá: "
+        f"thành công {success}, thất bại {failed}, tổng {total}"
+    )
 
 def sync_quarterly_financial_ratios(symbol: str, year: int):
     """Đồng bộ EPS, P/E, ROE, ROA, ROIC theo quý của một năm."""
@@ -680,7 +855,6 @@ def delete_table_data(table_names: list[str]):
     table_models = {
         Stock.__tablename__: Stock,
         StockPrice.__tablename__: StockPrice,
-        StockFinancialReport.__tablename__: StockFinancialReport,
         StockFinancial.__tablename__: StockFinancial,
         StockValuation.__tablename__: StockValuation,
     }
@@ -731,9 +905,9 @@ def main():
         "--type",
         type=int,
         required=True,
-        choices=[1, 2, 3, 4],
+        choices=[1, 2, 3, 4, 5],
         help="1: Danh mục, 2: Dữ liệu năm, "
-             "3: Dữ liệu quý, 4: Xóa dữ liệu bảng",
+             "3: Dữ liệu quý, 4: Xóa dữ liệu bảng, 5: Lấy giá mới nhất, giá tham chiếu",
     )
 
     parser.add_argument("--start-year", type=int, default=2018)
@@ -795,7 +969,12 @@ def main():
             delete_table_data(table_names)
         else:
             print("Đã hủy thao tác xóa.")
-
+    elif args.type == 5:
+        sync_all_price_stock_data( 
+            limit=args.limit,
+            delay=args.delay)
 
 if __name__ == "__main__":
+    #get_stock_info("FPT")
+    #get_reference_price("FPT")
     main()

@@ -47,6 +47,9 @@ class Stock(Base):
     exchange: Mapped[str] = mapped_column(String(10))
     industry: Mapped[str | None] = mapped_column(String(150))
     company_type: Mapped[str | None] = mapped_column(String(50))
+    reference_price = Column(Numeric(15, 2), nullable=True)
+    current_price = Column(Numeric(15, 2), nullable=True)
+    change_percent = Column(Numeric(10, 4), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), default="active", server_default="active"
     )
