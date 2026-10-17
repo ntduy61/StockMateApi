@@ -205,3 +205,22 @@ CREATE TABLE stock_financial_reports (
 );
 
 
+ALTER TABLE stock_valuations
+ADD COLUMN period_type VARCHAR(10) NOT NULL DEFAULT 'quarter',
+ADD COLUMN fiscal_quarter TINYINT(4) DEFAULT NULL,
+ADD COLUMN fiscal_quarter_txt VARCHAR(100) DEFAULT NULL;
+
+ALTER TABLE stocks
+    ADD COLUMN reference_price DECIMAL(15, 2) NULL,
+    ADD COLUMN current_price DECIMAL(15, 2) NULL,
+    ADD COLUMN change_percent DECIMAL(10, 4) NULL;
+
+ALTER TABLE stocks
+    ADD COLUMN icb_code1 VARCHAR(10) NULL,
+    ADD COLUMN icb_name1 VARCHAR(150) NULL,
+    ADD COLUMN icb_code2 VARCHAR(10) NULL,
+    ADD COLUMN icb_name2 VARCHAR(150) NULL,
+    ADD COLUMN icb_code3 VARCHAR(10) NULL,
+    ADD COLUMN icb_name3 VARCHAR(150) NULL,
+    ADD COLUMN icb_code4 VARCHAR(10) NULL,
+    ADD COLUMN icb_name4 VARCHAR(150) NULL;

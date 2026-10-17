@@ -35,12 +35,14 @@ EXCHANGE_MAPPING = {
     "UPCOM": "UPCOM",
 }
 
+from vnstock import Listing
+
 def get_stock_info(symbol: str):
-    listing = Listing(source="VCI")
-    df = listing.symbols_by_exchange()
-
     symbol = symbol.strip().upper()
+    listing = Listing(source="VCI")
 
+    # Thông tin niêm yết
+    df = listing.symbols_by_exchange()
     stock = df[df["symbol"] == symbol]
 
     if stock.empty:
@@ -50,6 +52,20 @@ def get_stock_info(symbol: str):
     print(f"Thông tin cổ phiếu {symbol}:")
     for column, value in stock.iloc[0].items():
         print(f"{column}: {value}")
+
+    # Lấy thông tin ngành
+    df_industry = listing.symbols_by_industries(lang="vi")
+    industry = df_industry[df_industry["symbol"] == symbol]
+
+    if not industry.empty:
+        print("\nThông tin ngành:")
+        for _, row in industry.iterrows():
+            print(
+                f"ICB cấp {row['icb_level']}: "
+                f"{row['icb_name']} ({row['icb_code']})"
+            )
+    else:
+        print("Không tìm thấy thông tin ngành.")
 
 
 
@@ -975,6 +991,6 @@ def main():
             delay=args.delay)
 
 if __name__ == "__main__":
-    #get_stock_info("FPT")
+    get_stock_info("FPT")
     #get_reference_price("FPT")
-    main()
+    #main()
