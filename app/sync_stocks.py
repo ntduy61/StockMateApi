@@ -37,7 +37,7 @@ EXCHANGE_MAPPING = {
 
 from vnstock import Listing
 
-def get_stock_info(symbol: str):
+def get_stock_industry(symbol: str):
     symbol = symbol.strip().upper()
     listing = Listing(source="VCI")
 
@@ -57,17 +57,116 @@ def get_stock_info(symbol: str):
     df_industry = listing.symbols_by_industries(lang="vi")
     industry = df_industry[df_industry["symbol"] == symbol]
 
+    # Khởi tạo giá trị mặc định
+    icb_code1 = icb_name1 = ""
+    icb_code2 = icb_name2 = ""
+    icb_code3 = icb_name3 = ""
+    icb_code4 = icb_name4 = ""
+
     if not industry.empty:
         print("\nThông tin ngành:")
+
         for _, row in industry.iterrows():
-            print(
-                f"ICB cấp {row['icb_level']}: "
-                f"{row['icb_name']} ({row['icb_code']})"
-            )
+            level = int(row["icb_level"])
+            code = str(row["icb_code"])
+            name = str(row["icb_name"])
+
+            print(f"ICB cấp {level}: {name} ({code})")
+
+            if level == 1:
+                icb_code1 = code
+                icb_name1 = name
+            elif level == 2:
+                icb_code2 = code
+                icb_name2 = name
+            elif level == 3:
+                icb_code3 = code
+                icb_name3 = name
+            elif level == 4:
+                icb_code4 = code
+                icb_name4 = name
     else:
         print("Không tìm thấy thông tin ngành.")
 
+    # Chỉ cập nhật mã đã tồn tại trong stocks
+    db = SessionLocal()
 
+    try:
+        stock = db.scalar(
+            select(Stock).where(Stock.symbol == symbol)
+        )
+
+        if stock is None:
+            print(f"[Industry] {symbol}: Không tồn tại trong stocks")
+            return False
+
+        stock.icb_code1 = icb_code1
+        stock.icb_name1 = icb_name1
+        stock.icb_code2 = icb_code2
+        stock.icb_name2 = icb_name2
+        stock.icb_code3 = icb_code3
+        stock.icb_name3 = icb_name3
+        stock.icb_code4 = icb_code4
+        stock.icb_name4 = icb_name4
+
+        db.commit()
+
+        print(
+            f"[Industry] {symbol}: "
+            f"icb_code1={icb_code1}, "
+            f"icb_name1={icb_name1}, "
+            f"icb_code2={icb_code2}, "
+            f"icb_name2={icb_name2}, "
+            f"icb_code3={icb_code3}, "
+            f"icb_name3={icb_name3}, "
+            f"icb_code4={icb_code4}, "
+            f"icb_name4={icb_name4}, "
+        )
+        return True
+
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def sync_all_industry_stock_data(limit=None, delay=1.5):
+    """Đồng bộ giá của các mã đã lưu trong stocks."""
+
+    db = SessionLocal()
+
+    try:
+        stmt = select(Stock.symbol).order_by(Stock.symbol)
+
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        symbols = db.scalars(stmt).all()
+    finally:
+        db.close()
+
+    total = len(symbols)
+    success = 0
+    failed = 0
+
+    print(f"Bắt đầu đồng bộ giá cho {total} mã")
+
+    for index, symbol in enumerate(symbols, start=1):
+        print(f"\n[{index}/{total}] {symbol}")
+
+        if get_stock_industry(symbol):
+            success += 1
+        else:
+            failed += 1
+
+        if index < total:
+            time.sleep(delay)
+
+    print(
+        f"\nHoàn tất đồng bộ Thông tin ngành: "
+        f"thành công {success}, thất bại {failed}, tổng {total}"
+    )
 
 
 def get_reference_price(symbol: str) -> bool:
@@ -587,8 +686,8 @@ def sync_all_market_data(limit=None, delay=1.5):
     for index, symbol in enumerate(symbols, start=1):
         print(f"\n[{index}/{total}] {symbol}")
 
-        get_reference_price(symbol)
-        time.sleep(delay)
+        #get_reference_price(symbol)
+        #time.sleep(delay)
 
         sync_financial_ratios(symbol)
         time.sleep(delay)
@@ -921,9 +1020,9 @@ def main():
         "--type",
         type=int,
         required=True,
-        choices=[1, 2, 3, 4, 5],
+        choices=[1, 2, 3, 4, 5, 6],
         help="1: Danh mục, 2: Dữ liệu năm, "
-             "3: Dữ liệu quý, 4: Xóa dữ liệu bảng, 5: Lấy giá mới nhất, giá tham chiếu",
+             "3: Dữ liệu quý, 4: Xóa dữ liệu bảng, 5: Lấy giá mới nhất, giá tham chiếu, 6: Lấy loại ngành cp 4 cấp, "
     )
 
     parser.add_argument("--start-year", type=int, default=2018)
@@ -989,6 +1088,10 @@ def main():
         sync_all_price_stock_data( 
             limit=args.limit,
             delay=args.delay)
+    elif args.type == 6:
+            sync_all_industry_stock_data( 
+                limit=args.limit,
+                delay=args.delay)
 
 if __name__ == "__main__":
     #get_stock_info("FPT")
