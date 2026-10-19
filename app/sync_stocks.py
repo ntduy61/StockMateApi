@@ -991,6 +991,6 @@ def main():
             delay=args.delay)
 
 if __name__ == "__main__":
-    get_stock_info("FPT")
+    #get_stock_info("FPT")
     #get_reference_price("FPT")
-    #main()
+    main()
