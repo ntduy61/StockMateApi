@@ -6,7 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.mysql import BIGINT
-from app.database import Base
+from app.db.database import Base
 
 
 class User(Base):
@@ -193,9 +193,6 @@ class SyncLog(Base):
     )
     error_message: Mapped[str | None] = mapped_column(Text)
 
-
-
-# Thêm class này vào app/models.py
 class Watchlist(Base):
     __tablename__ = "watchlists"
 

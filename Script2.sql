@@ -55,7 +55,7 @@ CREATE TABLE `sync_logs` (
 CREATE TABLE `users` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `username` varchar(50) NOT NULL,
-  `email` varchar(255) NOT NULL,
+  `email` VARCHAR(191) NOT NULL,
   `password_hash` varchar(255) NOT NULL,
   `full_name` varchar(100) DEFAULT NULL,
   `role` varchar(20) NOT NULL DEFAULT 'user',
@@ -67,7 +67,7 @@ CREATE TABLE `users` (
   UNIQUE KEY `uq_users_username` (`username`),
   UNIQUE KEY `uq_users_email` (`email`),
   KEY `idx_users_active` (`is_active`)
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- stockmate.stock_financials definition
@@ -154,4 +154,4 @@ CREATE TABLE `watchlists` (
   KEY `idx_watchlists_stock_id` (`stock_id`),
   CONSTRAINT `fk_watchlist_stock` FOREIGN KEY (`stock_id`) REFERENCES `stocks` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_watchlist_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

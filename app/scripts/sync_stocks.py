@@ -22,8 +22,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 
-from app.database import SessionLocal
-from app.models import Stock, StockPrice, StockFinancial, StockValuation
+from app.db.database import SessionLocal
+from app.models.models import Stock, StockPrice, StockFinancial, StockValuation
 
 EXCHANGES = ["HOSE", "HNX", "UPCOM"]
 
