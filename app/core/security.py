@@ -18,6 +18,14 @@ if not JWT_SECRET_KEY:
     raise RuntimeError("Chưa cấu hình JWT_SECRET_KEY trong .env")
 
 password_hash = PasswordHash.recommended()
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not hashed_password:
+        return False
+
+    try:
+        return password_hash.verify(plain_password, hashed_password)
+    except Exception:
+        return False
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 

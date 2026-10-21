@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -41,3 +43,18 @@ class StockCreate(BaseModel):
 class WatchlistCreate(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     note: str | None = Field(default=None, max_length=255)
+
+class PriceAlertCreate(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    target_price: Decimal = Field(gt=0)
+
+
+class PriceAlertUpdate(BaseModel):
+    target_price: Decimal | None = Field(default=None, gt=0)
+    is_enabled: bool | None = None
+
+class PushSendRequest(BaseModel):
+    user_id: int
+    title: str = Field(min_length=1, max_length=100)
+    body: str = Field(min_length=1, max_length=500)
+    data: dict = Field(default_factory=dict)

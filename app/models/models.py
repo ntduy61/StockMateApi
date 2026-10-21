@@ -226,4 +226,3 @@ class Watchlist(Base):
     stock = relationship("Stock")
 
 
-

@@ -110,12 +110,19 @@ def me(user: User = Depends(get_current_user)):
         "is_active": user.is_active,
     }
 
-@router.post("/change-password")
+@router.post("/api/auth/change-password")
 def change_password(
     request: ChangePasswordRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    # Kiểm tra mật khẩu mới tối thiểu 8 ký tự
+    if len(request.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mật khẩu mới phải có ít nhất 8 ký tự",
+        )
+
     # Kiểm tra mật khẩu hiện tại
     if not verify_password(
         request.current_password,
@@ -134,7 +141,9 @@ def change_password(
         )
 
     # Cập nhật mật khẩu mới
-    current_user.password_hash = hash_password(request.new_password)
+    current_user.password_hash = password_hash.hash(
+        request.new_password
+    )
 
     db.commit()
     db.refresh(current_user)
