@@ -13,15 +13,13 @@ from vnstock import Listing
 from sqlalchemy import func
 import time
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from sqlalchemy import select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from vnstock import Quote, Fundamental, Trading
 from decimal import Decimal
 from sqlalchemy.exc import SQLAlchemyError
-
-
-
+import time
 from app.db.database import SessionLocal
 from app.models.models import Stock, StockPrice, StockFinancial, StockValuation
 
@@ -46,12 +44,12 @@ def get_stock_industry(symbol: str):
     stock = df[df["symbol"] == symbol]
 
     if stock.empty:
-        print(f"Không tìm thấy mã cổ phiếu: {symbol}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Không tìm thấy mã cổ phiếu: {symbol}")
         return
 
-    print(f"Thông tin cổ phiếu {symbol}:")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Thông tin cổ phiếu {symbol}:")
     for column, value in stock.iloc[0].items():
-        print(f"{column}: {value}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"{column}: {value}")
 
     # Lấy thông tin ngành
     df_industry = listing.symbols_by_industries(lang="vi")
@@ -64,14 +62,14 @@ def get_stock_industry(symbol: str):
     icb_code4 = icb_name4 = ""
 
     if not industry.empty:
-        print("\nThông tin ngành:")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\nThông tin ngành:")
 
         for _, row in industry.iterrows():
             level = int(row["icb_level"])
             code = str(row["icb_code"])
             name = str(row["icb_name"])
 
-            print(f"ICB cấp {level}: {name} ({code})")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"ICB cấp {level}: {name} ({code})")
 
             if level == 1:
                 icb_code1 = code
@@ -86,7 +84,7 @@ def get_stock_industry(symbol: str):
                 icb_code4 = code
                 icb_name4 = name
     else:
-        print("Không tìm thấy thông tin ngành.")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Không tìm thấy thông tin ngành.")
 
     # Chỉ cập nhật mã đã tồn tại trong stocks
     db = SessionLocal()
@@ -97,7 +95,7 @@ def get_stock_industry(symbol: str):
         )
 
         if stock is None:
-            print(f"[Industry] {symbol}: Không tồn tại trong stocks")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[Industry] {symbol}: Không tồn tại trong stocks")
             return False
 
         stock.icb_code1 = icb_code1
@@ -112,6 +110,7 @@ def get_stock_industry(symbol: str):
         db.commit()
 
         print(
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
             f"[Industry] {symbol}: "
             f"icb_code1={icb_code1}, "
             f"icb_name1={icb_name1}, "
@@ -150,10 +149,10 @@ def sync_all_industry_stock_data(limit=None, delay=1.5):
     success = 0
     failed = 0
 
-    print(f"Bắt đầu đồng bộ giá cho {total} mã")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Bắt đầu đồng bộ giá cho {total} mã")
 
     for index, symbol in enumerate(symbols, start=1):
-        print(f"\n[{index}/{total}] {symbol}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\n[{index}/{total}] {symbol}")
 
         if get_stock_industry(symbol):
             success += 1
@@ -164,92 +163,153 @@ def sync_all_industry_stock_data(limit=None, delay=1.5):
             time.sleep(delay)
 
     print(
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
         f"\nHoàn tất đồng bộ Thông tin ngành: "
         f"thành công {success}, thất bại {failed}, tổng {total}"
     )
 
 
-def get_reference_price(symbol: str) -> bool:
-    """Lấy giá từ VCI và cập nhật 3 cột trong bảng stocks."""
+
+
+
+def get_reference_price(symbol: str, delay: float = 10) -> bool:
+    """
+    Lấy giá từ VCI và cập nhật stocks.
+    Nếu lỗi API, DNS hoặc dữ liệu giá không hợp lệ:
+    chờ delay giây rồi thử lại cho đến khi thành công.
+    """
 
     symbol = symbol.strip().upper()
+    attempt = 0
 
-    try:
-        trading = Trading(source="VCI", symbol=symbol)
-        df = trading.price_board(symbols_list=[symbol])
-
-        if df is None or df.empty:
-            print(f"[PRICE] {symbol}: Không có dữ liệu VCI")
-            return False
-
-        # Lọc đúng mã cổ phiếu vì bảng giá có thể chứa nhiều mã
-        symbol_col = ("listing", "symbol")
-        if symbol_col not in df.columns:
-            print(f"[PRICE] {symbol}: Không tìm thấy cột symbol")
-            return False
-
-        matched = df[df[symbol_col].astype(str).str.upper() == symbol]
-
-        if matched.empty:
-            print(f"[PRICE] {symbol}: Không tìm thấy mã trong bảng giá")
-            return False
-
-        row = matched.iloc[0]
-
-        reference_price = row[("match", "reference_price")]
-        current_price = row[("match", "match_price")]
-
-        # Kiểm tra dữ liệu rỗng/NaN trước khi cập nhật
-        if pd.isna(reference_price) or pd.isna(current_price):
-            print(f"[PRICE] {symbol}: Giá tham chiếu hoặc giá khớp bị trống")
-            return False
-
-        reference_price = Decimal(str(reference_price))
-        current_price = Decimal(str(current_price))
-
-        if reference_price <= 0 or current_price < 0:
-            print(f"[PRICE] {symbol}: Giá không hợp lệ")
-            return False
-
-        change_percent = (
-            (current_price - reference_price) / reference_price
-        ) * Decimal("100")
-
-        # Chỉ cập nhật mã đã tồn tại trong stocks
-        db = SessionLocal()
+    while True:
+        attempt += 1
 
         try:
-            stock = db.scalar(
-                select(Stock).where(Stock.symbol == symbol)
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
+                f"[PRICE] {symbol}: Lần thử {attempt}",
+                flush=True,
             )
 
-            if stock is None:
-                print(f"[PRICE] {symbol}: Không tồn tại trong stocks")
-                return False
+            # Gọi API Vietcap
+            trading = Trading(source="VCI", symbol=symbol)
+            df = trading.price_board(symbols_list=[symbol])
 
-            stock.reference_price = reference_price
-            stock.current_price = current_price
-            stock.change_percent = change_percent
+            if df is None or df.empty:
+                raise ValueError("API không trả về dữ liệu giá")
 
-            db.commit()
+            symbol_col = ("listing", "symbol")
+
+            if symbol_col not in df.columns:
+                raise ValueError("Không tìm thấy cột symbol")
+
+            matched = df[
+                df[symbol_col].astype(str).str.upper() == symbol
+            ]
+
+            if matched.empty:
+                raise ValueError(
+                    f"Không tìm thấy mã {symbol} trong bảng giá"
+                )
+
+            row = matched.iloc[0]
+
+            reference_price = row[("match", "reference_price")]
+            current_price = row[("match", "match_price")]
 
             print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
                 f"[PRICE] {symbol}: "
-                f"ref={reference_price}, "
-                f"current={current_price}, "
-                f"change={change_percent:.2f}%"
+                f"reference_raw={reference_price!r}, "
+                f"current_raw={current_price!r}",
+                flush=True,
             )
-            return True
 
-        except SQLAlchemyError:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+            # Kiểm tra dữ liệu không hợp lệ
+            if (
+                pd.isna(reference_price)
+                or pd.isna(current_price)
+                or float(reference_price) <= 0
+                or float(current_price) <= 0
+            ):
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"[PRICE] {symbol}: Giá không hợp lệ, bỏ qua cập nhật DB",
+                    flush=True,
+                )
+                return False
 
-    except Exception as e:
-        print(f"[PRICE] {symbol}: Lỗi đồng bộ - {e}")
-        return False
+            if pd.isna(reference_price) or pd.isna(current_price):
+                raise ValueError("Giá tham chiếu hoặc giá khớp bị trống")
+
+            reference_price = Decimal(str(reference_price))
+            current_price = Decimal(str(current_price))
+
+            if reference_price <= 0 or current_price <= 0:
+                raise ValueError(
+                    f"Giá không hợp lệ: ref={reference_price}, "
+                    f"current={current_price}"
+                )
+
+            change_percent = (
+                (current_price - reference_price)
+                / reference_price
+            ) * Decimal("100")
+
+            # Cập nhật database
+            db = SessionLocal()
+
+            try:
+                stock = db.scalar(
+                    select(Stock).where(Stock.symbol == symbol)
+                )
+
+                if stock is None:
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
+                        f"[PRICE] {symbol}: Không tồn tại trong stocks",
+                        flush=True,
+                    )
+                    return False
+
+                stock.reference_price = reference_price
+                stock.current_price = current_price
+                stock.change_percent = change_percent
+
+                db.commit()
+
+                print(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
+                    f"[PRICE] {symbol}: Đồng bộ thành công "
+                    f"ref={reference_price}, "
+                    f"current={current_price}, "
+                    f"change={change_percent:.2f}%",
+                    flush=True,
+                )
+
+                return True
+
+            except Exception:
+                db.rollback()
+                raise
+
+            finally:
+                db.close()
+
+        except Exception as e:
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
+                f"[PRICE] {symbol}: Lỗi lần {attempt}: {e}",
+                flush=True,
+            )
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
+                f"[PRICE] {symbol}: Chờ {delay} giây rồi thử lại...",
+                flush=True,
+            )
+            time.sleep(delay)
+
 
 
 
@@ -358,18 +418,18 @@ def sync_stocks():
         result = db.execute(upsert_stmt)
         db.commit()
 
-        print("=" * 55)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"=" * 55)
         print("ĐỒNG BỘ DANH MỤC CỔ PHIẾU THÀNH CÔNG")
         print("=" * 55)
 
         for exchange in EXCHANGES:
             count = int((df["exchange"] == exchange).sum())
-            print(f"{exchange}: {count} mã")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"{exchange}: {count} mã")
 
-        print(f"Tổng mã nguồn hợp lệ: {len(rows)}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Tổng mã nguồn hợp lệ: {len(rows)}")
         #print(f"CSV: {csv_path}")
-        print(f"Số dòng MariaDB báo ảnh hưởng: {result.rowcount}")
-        print("Đã hoàn tất đồng bộ.")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Số dòng MariaDB báo ảnh hưởng: {result.rowcount}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Đã hoàn tất đồng bộ.")
 
     except Exception:
         db.rollback()
@@ -393,7 +453,7 @@ def sync_latest_price(symbol: str):
         )
 
         if stock is None:
-            print(f"[PRICE] {symbol}: chưa có trong bảng stocks")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[PRICE] {symbol}: chưa có trong bảng stocks")
             return False
 
         quote = Quote(symbol=symbol, source="VCI")
@@ -405,7 +465,7 @@ def sync_latest_price(symbol: str):
         )
 
         if df is None or df.empty:
-            print(f"[PRICE] {symbol}: không có dữ liệu")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[PRICE] {symbol}: không có dữ liệu")
             return False
 
         df = df.sort_values("time")
@@ -423,6 +483,7 @@ def sync_latest_price(symbol: str):
 
         if existing is not None:
             print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
                 f"[PRICE] {symbol}: {trading_date} đã tồn tại, "
                 "bỏ qua insert"
             )
@@ -457,6 +518,7 @@ def sync_latest_price(symbol: str):
         db.commit()
 
         print(
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
             f"[PRICE] {symbol}: đã insert {trading_date}, "
             f"close={row['close_price']}"
         )
@@ -487,10 +549,10 @@ def sync_all_latest_prices(delay=1.5):
     success = 0
     failed = 0
 
-    print(f"[SCHEDULER] Bắt đầu đồng bộ giá cho {total} mã")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[SCHEDULER] Bắt đầu đồng bộ giá cho {total} mã")
 
     for index, symbol in enumerate(symbols, start=1):
-        print(f"\n[PRICE {index}/{total}] {symbol}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\n[PRICE {index}/{total}] {symbol}")
 
         if sync_latest_price(symbol):
             success += 1
@@ -500,6 +562,7 @@ def sync_all_latest_prices(delay=1.5):
         time.sleep(delay)
 
     print(
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
         f"\n[SCHEDULER] Hoàn tất: tổng {total}, "
         f"thành công {success}, thất bại {failed}"
     )
@@ -523,7 +586,7 @@ def sync_financial_ratios(symbol: str):
         )
 
         if stock is None:
-            print(f"[RATIO] {symbol}: chưa có trong bảng stocks")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[RATIO] {symbol}: chưa có trong bảng stocks")
             return False
 
         financial = Fundamental().equity(symbol)
@@ -535,13 +598,13 @@ def sync_financial_ratios(symbol: str):
         )
 
         if df is None or df.empty:
-            print(f"[RATIO] {symbol}: không có dữ liệu")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[RATIO] {symbol}: không có dữ liệu")
             return False
 
         required = {"item", "item_id"}
 
         if not required.issubset(df.columns):
-            print(f"[RATIO] Cột không hợp lệ: {df.columns.tolist()}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[RATIO] Cột không hợp lệ: {df.columns.tolist()}")
             return False
 
         # Chuyển các chỉ tiêu thành từ điển:
@@ -610,6 +673,7 @@ def sync_financial_ratios(symbol: str):
                 })
 
             print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
                 f"[RATIO] {symbol} {year}: "
                 f"EPS={eps}, P/E={pe}, ROE={roe}, "
                 f"ROA={roa}, ROIC={roic}, P/B={pb}, P/S={ps}"
@@ -649,6 +713,7 @@ def sync_financial_ratios(symbol: str):
         db.commit()
 
         print(
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
             f"[RATIO] {symbol}: đã lưu "
             f"{len(financial_rows)} bản ghi tài chính, "
             f"{len(valuation_rows)} bản ghi định giá"
@@ -681,10 +746,10 @@ def sync_all_market_data(limit=None, delay=1.5):
         db.close()
 
     total = len(symbols)
-    print(f"Bắt đầu đồng bộ dữ liệu cho {total} mã")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Bắt đầu đồng bộ dữ liệu cho {total} mã")
 
     for index, symbol in enumerate(symbols, start=1):
-        print(f"\n[{index}/{total}] {symbol}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\n[{index}/{total}] {symbol}")
 
         #get_reference_price(symbol)
         #time.sleep(delay)
@@ -692,7 +757,7 @@ def sync_all_market_data(limit=None, delay=1.5):
         sync_financial_ratios(symbol)
         time.sleep(delay)
 
-    print("\nĐã hoàn tất quá trình đồng bộ.")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\nĐã hoàn tất quá trình đồng bộ.")
 
 def sync_all_price_stock_data(limit=None, delay=1.5):
     """Đồng bộ giá của các mã đã lưu trong stocks."""
@@ -713,12 +778,12 @@ def sync_all_price_stock_data(limit=None, delay=1.5):
     success = 0
     failed = 0
 
-    print(f"Bắt đầu đồng bộ giá cho {total} mã")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Bắt đầu đồng bộ giá cho {total} mã")
 
     for index, symbol in enumerate(symbols, start=1):
-        print(f"\n[{index}/{total}] {symbol}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\n[{index}/{total}] {symbol}")
 
-        if get_reference_price(symbol):
+        if get_reference_price(symbol, delay):
             success += 1
         else:
             failed += 1
@@ -727,6 +792,7 @@ def sync_all_price_stock_data(limit=None, delay=1.5):
             time.sleep(delay)
 
     print(
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
         f"\nHoàn tất đồng bộ giá: "
         f"thành công {success}, thất bại {failed}, tổng {total}"
     )
@@ -745,7 +811,7 @@ def sync_quarterly_financial_ratios(symbol: str, year: int):
         )
 
         if stock is None:
-            print(f"[RATIO] {symbol}: chưa có trong bảng stocks")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[RATIO] {symbol}: chưa có trong bảng stocks")
             return False
 
         financial = Fundamental().equity(symbol)
@@ -757,12 +823,12 @@ def sync_quarterly_financial_ratios(symbol: str, year: int):
         )
 
         if df is None or df.empty:
-            print(f"[RATIO] {symbol}: không có dữ liệu")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[RATIO] {symbol}: không có dữ liệu")
             return False
 
         required = {"item", "item_id"}
         if not required.issubset(df.columns):
-            print(f"[RATIO] Cột không hợp lệ: {df.columns.tolist()}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[RATIO] Cột không hợp lệ: {df.columns.tolist()}")
             return False
 
         # Chỉ lấy cột đúng định dạng YYYY-Q1 đến YYYY-Q4.
@@ -777,6 +843,7 @@ def sync_quarterly_financial_ratios(symbol: str, year: int):
 
         if not quarter_cols:
             print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
                 f"[RATIO] {symbol}: không tìm thấy dữ liệu "
                 f"quý năm {year}. Các cột: {df.columns.tolist()}"
             )
@@ -863,6 +930,7 @@ def sync_quarterly_financial_ratios(symbol: str, year: int):
                 })
 
             print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
                 f"[RATIO] {symbol} {quarter_col}: "
                 f"EPS={eps}, P/E={pe}, ROE={roe}, "
                 f"ROA={roa}, ROIC={roic}, P/B={pb}, P/S={ps}"
@@ -902,6 +970,7 @@ def sync_quarterly_financial_ratios(symbol: str, year: int):
         db.commit()
 
         print(
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
             f"[RATIO] {symbol} năm {year}: đã lưu "
             f"{len(financial_rows)} bản ghi tài chính, "
             f"{len(valuation_rows)} bản ghi định giá"
@@ -940,10 +1009,10 @@ def sync_quarterly_all_market_data(year: int, limit=None, delay=1.5):
         db.close()
 
     total = len(symbols)
-    print(f"Bắt đầu đồng bộ {total} mã cho năm {year}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Bắt đầu đồng bộ {total} mã cho năm {year}")
 
     for index, symbol in enumerate(symbols, start=1):
-        print(f"\n[{index}/{total}] {symbol}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\n[{index}/{total}] {symbol}")
 
         try:
             sync_latest_price(symbol)
@@ -955,7 +1024,7 @@ def sync_quarterly_all_market_data(year: int, limit=None, delay=1.5):
         except Exception:
             logging.exception("[RATIO] Lỗi đồng bộ %s", symbol)
 
-    print(f"\nĐã hoàn tất đồng bộ năm {year}.")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\nĐã hoàn tất đồng bộ năm {year}.")
 
 
 from sqlalchemy import delete
@@ -994,12 +1063,13 @@ def delete_table_data(table_names: list[str]):
 
             result = db.execute(delete(model))
             print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " 
                 f"[DELETE] {table_name}: "
                 f"{result.rowcount} dòng"
             )
 
         db.commit()
-        print("[DELETE] Xóa dữ liệu thành công.")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"[DELETE] Xóa dữ liệu thành công.")
 
     except Exception:
         db.rollback()
@@ -1052,9 +1122,9 @@ def main():
             parser.error("--start-year phải <= --end-year")
 
         for year in range(args.start_year, args.end_year + 1):
-            print(f"\n{'=' * 50}")
-            print(f"ĐỒNG BỘ DỮ LIỆU QUÝ NĂM {year}")
-            print(f"{'=' * 50}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"\n{'=' * 50}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"ĐỒNG BỘ DỮ LIỆU QUÝ NĂM {year}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"{'=' * 50}")
 
             sync_quarterly_all_market_data(
                 year=year,
@@ -1083,7 +1153,7 @@ def main():
         if confirm == "YES":
             delete_table_data(table_names)
         else:
-            print("Đã hủy thao tác xóa.")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] " f"Đã hủy thao tác xóa.")
     elif args.type == 5:
         sync_all_price_stock_data( 
             limit=args.limit,
