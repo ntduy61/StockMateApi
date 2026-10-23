@@ -46,6 +46,7 @@ def attachment_dict(row):
 @router.get("/api/news")
 def get_notifications(
     category_id: int = Query(0, ge=0),
+    stock_symbol: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -57,6 +58,10 @@ def get_notifications(
         "offset": (page - 1) * page_size,
         "page_size": page_size,
     }
+    # Nếu có truyền mã cổ phiếu thì lọc theo mã
+    if stock_symbol:
+        conditions.append("stock_symbol = :stock_symbol")
+        params["stock_symbol"] = stock_symbol.upper()
 
     # Chuyển list thành chuỗi SQL
     where_clause = " AND ".join(conditions)
@@ -81,7 +86,7 @@ def get_notifications(
                 created_at
             FROM stockmate.news
             WHERE {where_clause}
-            ORDER BY created_at DESC, id DESC
+            ORDER BY published_at DESC, id DESC
             LIMIT :page_size OFFSET :offset
         """),
         params,

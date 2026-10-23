@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 
 from sqlalchemy import text
 from app.db.database import get_db
+from app.scripts.check_news_notifications import send_news_notification
 
 
 logging.basicConfig(
@@ -412,7 +413,7 @@ def fetch_news_detail(source_url: str) -> dict:
 
         # Lấy toàn bộ HTML bên trong vùng nội dung bài viết
         result["content"] = content_container.decode_contents().strip()
-        
+
         # --------------------------------------------------
         # 5. Lấy tên nguồn tin
         # --------------------------------------------------
@@ -859,11 +860,17 @@ def sync_news(
         inserted_or_updated = 0
         detail_success = 0
         errors = 0
-
+        new_news_ids = []
         for index, item in enumerate(all_news, start=1):
             try:
                 source_url = item["source_url"]
-                existing = existing_by_url.get(source_url)
+
+                normalized_url = normalize_url(source_url)
+
+                existing = existing_by_url.get(normalized_url)
+
+                # Chỉ thông báo khi bài chưa tồn tại.
+                is_new_news = existing is None
 
                 # Nếu bài đã có nội dung, không cần tải lại
                 # HTML mỗi lần cron chạy.
@@ -930,6 +937,11 @@ def sync_news(
                         {"source_url": source_url},
                     ).first()
 
+
+                # Chỉ lưu ID bài mới vào danh sách chờ gửi.
+                if saved and is_new_news:
+                    new_news_ids.append(saved.id)
+
                 if saved and has_attachments:
                     # Tránh lặp file mỗi lần đồng bộ.
                     db.execute(
@@ -978,15 +990,34 @@ def sync_news(
                     item.get("source_url"),
                 )
 
+        # Commit toàn bộ tin tức trước.
         db.commit()
 
         logging.info(
+            "Đã commit dữ liệu news vào MariaDB"
+        )
+
+        # Chỉ gửi thông báo cho bài mới.
+        for news_id in new_news_ids:
+
+            try:
+                send_news_notification(news_id)
+
+            except Exception:
+                logging.exception(
+                    "Lỗi gửi thông báo news_id=%s",
+                    news_id,
+                )
+
+        logging.info(
             "Hoàn tất đồng bộ CafeF | mã=%s | "
-            "bài=%s | chi tiết=%s | lỗi=%s",
+            "bài=%s | chi tiết=%s | lỗi=%s | "
+            "tin mới cần thông báo=%s",
             len(symbols),
             inserted_or_updated,
             detail_success,
             errors,
+            len(new_news_ids),
         )
 
     except Exception:

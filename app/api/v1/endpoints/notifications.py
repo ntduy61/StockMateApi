@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import User
 from app.core.security import get_current_user
+from app.schemas.schemas import NotificationSettingsUpdate
 
 router = APIRouter()
 
@@ -29,6 +30,7 @@ def notification_dict(row):
         "created_at": str(row["created_at"])
         if row["created_at"] else None,
     }
+
 
 
 @router.get("/api/notifications")
@@ -140,4 +142,118 @@ def mark_all_notifications_read(
     return {
         "message": "Đã đánh dấu tất cả thông báo đã đọc",
         "updated_count": result.rowcount,
+    }
+
+@router.get("/api/notifications/settings")
+def notification_settings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    row = db.execute(
+        text("""
+            SELECT
+                id,
+                user_id,
+                news_notification,
+                price_notification,
+                watchlist_notification,
+                system_notification
+            FROM stockmate.notification_settings
+            WHERE user_id = :user_id
+            LIMIT 1
+        """),
+        {"user_id": current_user.id},
+    ).mappings().first()
+
+    # Chưa có cấu hình thì trả về mặc định bật tất cả
+    if row is None:
+        return {
+            "id": None,
+            "user_id": current_user.id,
+            "news_notification": True,
+            "price_notification": True,
+            "watchlist_notification": True,
+            "system_notification": True,
+        }
+
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "news_notification": bool(row["news_notification"]),
+        "price_notification": bool(row["price_notification"]),
+        "watchlist_notification": bool(row["watchlist_notification"]),
+        "system_notification": bool(row["system_notification"]),
+    }
+
+
+@router.put("/api/notifications/settings")
+def update_notification_settings(
+    settings: NotificationSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    params = {
+        "user_id": current_user.id,
+        "news_notification": settings.news_notification,
+        "price_notification": settings.price_notification,
+        "watchlist_notification": settings.watchlist_notification,
+        "system_notification": settings.system_notification,
+    }
+
+    row = db.execute(
+        text("""
+            SELECT id
+            FROM stockmate.notification_settings
+            WHERE user_id = :user_id
+            LIMIT 1
+        """),
+        {"user_id": current_user.id},
+    ).first()
+
+    if row:
+        # Đã có cấu hình -> cập nhật
+        db.execute(
+            text("""
+                UPDATE stockmate.notification_settings
+                SET
+                    news_notification = :news_notification,
+                    price_notification = :price_notification,
+                    watchlist_notification = :watchlist_notification,
+                    system_notification = :system_notification
+                WHERE user_id = :user_id
+            """),
+            params,
+        )
+    else:
+        # Chưa có cấu hình -> thêm mới
+        db.execute(
+            text("""
+                INSERT INTO stockmate.notification_settings (
+                    user_id,
+                    news_notification,
+                    price_notification,
+                    watchlist_notification,
+                    system_notification
+                )
+                VALUES (
+                    :user_id,
+                    :news_notification,
+                    :price_notification,
+                    :watchlist_notification,
+                    :system_notification
+                )
+            """),
+            params,
+        )
+
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Cập nhật cấu hình thông báo thành công",
+        "user_id": current_user.id,
+        "news_notification": settings.news_notification,
+        "price_notification": settings.price_notification,
+        "watchlist_notification": settings.watchlist_notification,
+        "system_notification": settings.system_notification,
     }

@@ -58,3 +58,9 @@ class PushSendRequest(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     body: str = Field(min_length=1, max_length=500)
     data: dict = Field(default_factory=dict)
+
+class NotificationSettingsUpdate(BaseModel):
+    news_notification: bool
+    price_notification: bool
+    watchlist_notification: bool
+    system_notification: bool
