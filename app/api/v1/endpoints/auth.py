@@ -89,6 +89,9 @@ def register(
         """),
         params,
     )
+    db.commit()
+    # Add notify setting
+
     return {
         "id": user.id,
         "username": user.username,
