@@ -115,13 +115,13 @@ def check_price_alerts():
             current_price = float(latest["current_price"])
 
             # Ví dụ cảnh báo khi giá tăng đến/vượt giá mục tiêu.
-            if current_price < target_price:
+            if current_price > target_price:
                 continue
 
             title = f"Cảnh báo giá {symbol}"
             message = (
-                f"{symbol} đã đạt giá mục tiêu "
-                f"{current_price:,.0f} >= {target_price:,.0f}"
+                f"{symbol} đã đạt tới giá mục tiêu cần mua"
+                f"{current_price:,.0f} <= {target_price:,.0f}"
             )
 
             # Đánh dấu có điều kiện để tránh hai lần chạy

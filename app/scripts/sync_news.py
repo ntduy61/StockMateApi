@@ -272,133 +272,208 @@ def get_news_list(
         return []
 
 
-def fetch_news_detail(source_url: str):
+
+def fetch_news_detail(source_url: str) -> dict:
     """
-    Đọc nội dung chi tiết, nguồn trích dẫn,
-    và các file đính kèm trong #newscontent.
+    Lấy nội dung chi tiết tin CafeF.
+
+    Hỗ trợ:
+    - Tin công bố thông tin: #newscontent
+    - Tin CafeF thông thường: .detail-content.afcbc-body[data-role='content']
+
+    Return:
+    {
+        "content": str,
+        "source_name": str | None,
+        "attachments": list[dict]
+    }
     """
+
     result = {
         "content": None,
         "source_name": None,
         "attachments": [],
     }
 
+    if not source_url:
+        return result
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/130.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+
     try:
         response = requests.get(
             source_url,
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
+            headers=headers,
+            timeout=20,
         )
         response.raise_for_status()
+        response.encoding = response.apparent_encoding
 
-        soup = BeautifulSoup(
-            response.content,
-            "html.parser",
-        )
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # --------------------------------------------------
+        # 1. Tìm vùng nội dung bài viết
+        # --------------------------------------------------
 
         news_content = soup.select_one("#newscontent")
 
+        # CafeF article thông thường
+        if not news_content:
+            news_content = soup.select_one(
+                ".detail-content.afcbc-body[data-role='content']"
+            )
+
+        # Fallback cho một số cấu trúc CafeF khác
+        if not news_content:
+            news_content = soup.select_one(
+                ".detail-content"
+            )
+
         if not news_content:
             logging.warning(
-                "Không tìm thấy #newscontent: %s",
+                "Không tìm thấy vùng nội dung bài viết: %s",
                 source_url,
             )
             return result
 
-        # Nội dung chính: chỉ lấy phần content,
-        # không gộp tiêu đề file hoặc nguồn trích dẫn.
-        content_parts = []
+        # --------------------------------------------------
+        # 2. Lấy nội dung tin công bố thông tin
+        # --------------------------------------------------
 
-        for element in news_content.select(
-            ".content .pa-hose"
+        disclosure_content = news_content.select_one(".pa-hose")
+
+        if not disclosure_content:
+            disclosure_content = news_content.select_one(
+                ".desc.unreset"
+            )
+
+        if disclosure_content:
+            content_container = disclosure_content
+        else:
+            content_container = news_content
+
+        # --------------------------------------------------
+        # 3. Xóa các thành phần không phải nội dung bài viết
+        # --------------------------------------------------
+
+        for element in content_container.select(
+            "script, style, iframe, noscript"
         ):
-            # Bỏ phần chứa file đính kèm.
-            if element.select_one(".FileWrapper"):
+            element.decompose()
+
+        # Xóa các thành phần quảng cáo / bài liên quan
+        for element in content_container.select(
+            ".pushed, .related-news, .box-related, "
+            ".ads, .advertisement, .banner"
+        ):
+            element.decompose()
+
+        # --------------------------------------------------
+        # 4. Lấy nội dung text
+        # --------------------------------------------------
+
+        paragraphs = []
+
+        for element in content_container.select("p"):
+            text = element.get_text(" ", strip=True)
+
+            if not text:
                 continue
 
-            # Bỏ phần nguồn trích dẫn.
-            if element.find_parent(id="originSource"):
-                continue
+            # Bỏ các đoạn chỉ có nội dung quảng cáo hoặc điều hướng
+            lower_text = text.lower()
 
-            # Chỉ lấy các khối nội dung không nằm
-            # bên trong một khối đã được xử lý.
-            if element.find_parent(
-                class_="pa-hose"
+            if (
+                "xem thêm" in lower_text
+                or "đọc thêm" in lower_text
+                or "tin liên quan" in lower_text
             ):
                 continue
 
-            value = element.get_text(
+            paragraphs.append(text)
+
+        # Nếu bài không dùng thẻ p, lấy toàn bộ text
+        if paragraphs:
+            content = "\n\n".join(paragraphs)
+        else:
+            content = content_container.get_text(
                 "\n",
                 strip=True,
             )
 
-            if value:
-                content_parts.append(value)
+        result["content"] = content.strip() if content else None
 
-        if not content_parts:
-            # Fallback: lấy text từ các thẻ p
-            # thuộc khối nội dung, tránh file PDF.
-            for paragraph in news_content.select(
-                ".content p"
-            ):
-                if paragraph.find_parent(
-                    class_="FileWrapper"
-                ):
-                    continue
+        # --------------------------------------------------
+        # 5. Lấy tên nguồn tin
+        # --------------------------------------------------
 
-                value = paragraph.get_text(
-                    " ",
-                    strip=True,
-                )
+        source_element = soup.select_one("#originSource")
 
-                if value:
-                    content_parts.append(value)
-
-        # Loại bỏ nội dung lặp nhưng giữ thứ tự.
-        unique_parts = list(dict.fromkeys(content_parts))
-
-        result["content"] = (
-            "\n\n".join(unique_parts) or None
-        )
-
-        # Lấy nguồn dẫn, ví dụ HOSE.
-        origin = news_content.select_one("#originSource")
-
-        if origin:
-            origin_link = origin.find("a")
-
-            if origin_link:
-                result["source_name"] = (
-                    origin_link.get_text(strip=True)
-                )
-
-        # Lấy PDF và các file đính kèm.
-        for anchor in news_content.select(
-            ".FileWrapper a[href]"
-        ):
-            file_url = urljoin(
-                source_url,
-                anchor.get("href", "").strip(),
-            )
-
-            file_name = anchor.get_text(
+        if source_element:
+            source_name = source_element.get_text(
                 " ",
                 strip=True,
             )
 
-            if not file_url or not file_name:
+            if source_name:
+                result["source_name"] = source_name
+
+        # --------------------------------------------------
+        # 6. Lấy file đính kèm
+        # --------------------------------------------------
+
+        attachment_links = []
+
+        # File đính kèm thường nằm trong FileWrapper
+        attachment_links.extend(
+            soup.select(".FileWrapper a[href]")
+        )
+
+        # Một số tin có link PDF trực tiếp trong nội dung
+        attachment_links.extend(
+            content_container.select("a[href]")
+        )
+
+        # Loại link trùng
+        seen_urls = set()
+
+        for link in attachment_links:
+            href = link.get("href")
+
+            if not href:
                 continue
 
-            path = urlsplit(file_url).path.lower()
+            file_url = urljoin(source_url, href.strip())
 
-            if path.endswith(".pdf"):
+            if file_url in seen_urls:
+                continue
+
+            seen_urls.add(file_url)
+
+            file_name = (
+                link.get_text(" ", strip=True)
+                or file_url.rsplit("/", 1)[-1]
+            )
+
+            lower_url = file_url.lower().split("?")[0]
+
+            if lower_url.endswith(".pdf"):
                 file_type = "pdf"
-            elif path.endswith((".doc", ".docx")):
-                file_type = "document"
-            elif path.endswith((".xls", ".xlsx")):
-                file_type = "spreadsheet"
+            elif lower_url.endswith((".doc", ".docx")):
+                file_type = "doc"
+            elif lower_url.endswith((".xls", ".xlsx")):
+                file_type = "xls"
+            elif lower_url.endswith((".jpg", ".jpeg", ".png")):
+                file_type = "image"
             else:
-                file_type = "file"
+                continue
 
             result["attachments"].append({
                 "file_name": file_name,
@@ -406,16 +481,53 @@ def fetch_news_detail(source_url: str):
                 "file_type": file_type,
             })
 
-    except requests.RequestException:
-        logging.exception(
-            "Lỗi tải chi tiết bài viết: %s",
+        # --------------------------------------------------
+        # 7. Fallback: lấy link PDF từ iframe
+        # --------------------------------------------------
+
+        for iframe in soup.select("iframe[src]"):
+            iframe_url = urljoin(
+                source_url,
+                iframe.get("src", "").strip(),
+            )
+
+            lower_url = iframe_url.lower().split("?")[0]
+
+            if not lower_url.endswith(".pdf"):
+                continue
+
+            if iframe_url in seen_urls:
+                continue
+
+            seen_urls.add(iframe_url)
+
+            result["attachments"].append({
+                "file_name": iframe_url.rsplit("/", 1)[-1],
+                "file_url": iframe_url,
+                "file_type": "pdf",
+            })
+
+        logging.info(
+            "Đã lấy nội dung tin: %s | content_length=%s | attachments=%s",
             source_url,
+            len(result["content"] or ""),
+            len(result["attachments"]),
         )
 
-    except Exception:
+        return result
+
+    except requests.RequestException as exc:
         logging.exception(
-            "Lỗi phân tích HTML bài viết: %s",
+            "Lỗi request khi lấy tin %s: %s",
             source_url,
+            exc,
+        )
+
+    except Exception as exc:
+        logging.exception(
+            "Lỗi parse nội dung tin %s: %s",
+            source_url,
+            exc,
         )
 
     return result
