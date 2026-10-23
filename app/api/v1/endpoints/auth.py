@@ -62,6 +62,33 @@ def register(
     db.commit()
     db.refresh(user)
 
+    # Add notify setting
+    params = {
+        "user_id": user.id,
+        "news_notification": 1,
+        "price_notification": 1,
+        "watchlist_notification": 1,
+        "system_notification": 1,
+    }
+    db.execute(
+        text("""
+            INSERT INTO stockmate.notification_settings (
+                user_id,
+                news_notification,
+                price_notification,
+                watchlist_notification,
+                system_notification
+            )
+            VALUES (
+                :user_id,
+                :news_notification,
+                :price_notification,
+                :watchlist_notification,
+                :system_notification
+            )
+        """),
+        params,
+    )
     return {
         "id": user.id,
         "username": user.username,
