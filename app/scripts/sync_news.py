@@ -379,37 +379,40 @@ def fetch_news_detail(source_url: str) -> dict:
         # 4. Lấy nội dung text
         # --------------------------------------------------
 
-        paragraphs = []
+        # paragraphs = []
 
-        for element in content_container.select("p"):
-            text = element.get_text(" ", strip=True)
+        # for element in content_container.select("p"):
+        #     text = element.get_text(" ", strip=True)
 
-            if not text:
-                continue
+        #     if not text:
+        #         continue
 
-            # Bỏ các đoạn chỉ có nội dung quảng cáo hoặc điều hướng
-            lower_text = text.lower()
+        #     # Bỏ các đoạn chỉ có nội dung quảng cáo hoặc điều hướng
+        #     lower_text = text.lower()
 
-            if (
-                "xem thêm" in lower_text
-                or "đọc thêm" in lower_text
-                or "tin liên quan" in lower_text
-            ):
-                continue
+        #     if (
+        #         "xem thêm" in lower_text
+        #         or "đọc thêm" in lower_text
+        #         or "tin liên quan" in lower_text
+        #     ):
+        #         continue
 
-            paragraphs.append(text)
+        #     paragraphs.append(text)
 
-        # Nếu bài không dùng thẻ p, lấy toàn bộ text
-        if paragraphs:
-            content = "\n\n".join(paragraphs)
-        else:
-            content = content_container.get_text(
-                "\n",
-                strip=True,
-            )
+        # # Nếu bài không dùng thẻ p, lấy toàn bộ text
+        # if paragraphs:
+        #     content = "\n\n".join(paragraphs)
+        # else:
+        #     content = content_container.get_text(
+        #         "\n",
+        #         strip=True,
+        #     )
 
-        result["content"] = content.strip() if content else None
+        # result["content"] = content.strip() if content else None
 
+        # Lấy toàn bộ HTML bên trong vùng nội dung bài viết
+        result["content"] = content_container.decode_contents().strip()
+        
         # --------------------------------------------------
         # 5. Lấy tên nguồn tin
         # --------------------------------------------------
