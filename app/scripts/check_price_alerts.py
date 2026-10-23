@@ -81,10 +81,17 @@ def check_price_alerts():
         # Lấy danh sách cảnh báo chưa kích hoạt.
         alerts = db.execute(
             text("""
-                SELECT id, user_id, symbol, target_price
-                FROM price_alerts
-                WHERE is_enabled = 1
-                  AND is_triggered = 0
+                SELECT
+                    pa.id,
+                    pa.user_id,
+                    pa.symbol,
+                    pa.target_price
+                FROM price_alerts pa
+                INNER JOIN notification_settings ns
+                    ON ns.user_id = pa.user_id
+                WHERE pa.is_enabled = 1
+                AND pa.is_triggered = 0
+                AND ns.price_notification = 1;
             """)
         ).mappings().all()
 

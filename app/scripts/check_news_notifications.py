@@ -69,10 +69,13 @@ def send_news_notification(news_id: int):
                 FROM watchlists w
                 INNER JOIN stocks s
                     ON s.id = w.stock_id
+                INNER JOIN notification_settings ns
+                    ON ns.user_id = w.user_id
                 WHERE FIND_IN_SET(
                     s.symbol,
                     :symbols
                 ) > 0
+                AND ns.watchlist_notification = 1;
             """),
             {
                 "symbols": symbol,
