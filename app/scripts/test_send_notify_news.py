@@ -7,4 +7,4 @@ from app.db.database import get_db
 
 
 if __name__ == "__main__":
-    send_news_notification(11854)
+    send_news_notification(11855)
