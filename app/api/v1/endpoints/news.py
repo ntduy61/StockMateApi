@@ -27,8 +27,8 @@ def new_dict(row):
         "stock_symbol": row["stock_symbol"],
         "title": row["title"],
         "summary": row["summary"],
+        "published_at": str(row["published_at"]),
         "created_at": str(row["created_at"])
-        if row["created_at"] else None,
     }
 
 def attachment_dict(row):
