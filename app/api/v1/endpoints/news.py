@@ -83,6 +83,7 @@ def get_notifications(
                 stock_symbol,
                 title,
                 summary,
+                published_at,
                 created_at
             FROM stockmate.news
             WHERE {where_clause}
