@@ -81,7 +81,7 @@ def get_stock(symbol: str, db: Session = Depends(get_db)):
     return to_dict(
         stock,
         ["id", "symbol", "name", "exchange", "industry",
-         "company_type", "status", "listed_date", "website",
+         "company_type", "status", "listed_date", "website", "url_logo",
          "description", "reference_price", "current_price", "change_percent", "icb_code1", "icb_name1", "icb_code2", 
                  "icb_name2", "icb_code3", "icb_name3", "icb_code4", "icb_name4"]
     )
