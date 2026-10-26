@@ -928,11 +928,11 @@ def get_stock_document_pdf(
     symbol: str,
     url: str = Query(..., description="URL PDF từ CafeF"),
 ):
-    if not url.startswith("https://cafefnew.mediacdn.vn"):
-        raise HTTPException(
-            status_code=400,
-            detail="URL tài liệu không hợp lệ",
-        )
+    # if not url.startswith("https://cafefnew.mediacdn.vn"):
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail="URL tài liệu không hợp lệ",
+    #     )
 
     try:
         response = requests.get(
