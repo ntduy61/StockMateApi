@@ -55,6 +55,7 @@ class Stock(Base):
     )
     listed_date: Mapped[object | None] = mapped_column(Date)
     website: Mapped[str | None] = mapped_column(String(255))
+    url_logo: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     icb_code1: Mapped[str | None] = mapped_column(String(10))
     icb_name1: Mapped[str | None] = mapped_column(String(150))
