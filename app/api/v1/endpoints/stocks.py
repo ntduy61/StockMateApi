@@ -11,6 +11,8 @@ from app.core.security import (require_admin)
 from html import unescape
 from urllib.parse import urljoin
 from app.utils.serializers import to_dict
+from fastapi.responses import StreamingResponse
+from io import BytesIO
 
 router = APIRouter()
 @router.get("/api/stocks")
@@ -879,4 +881,93 @@ def get_stock_price_history(
         "data": price_history,
     }
 
+@router.get("/api/stocks/{symbol}/documents")
+def get_stock_documents(
+    symbol: str,
+    report_type: int = Query(1, alias="Type"),
+    year: int = Query(0, alias="Year"),
+):
+    url = "https://cafef.vn/du-lieu/Ajax/PageNew/FileBCTC.ashx"
 
+    params = {
+        "Symbol": symbol.upper(),
+        "Type": report_type,
+        "Year": year,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": f"https://cafef.vn/du-lieu/{symbol.upper()}.chn",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        return {
+            "symbol": symbol.upper(),
+            "data": result.get("Data", []),
+        }
+
+    except requests.RequestException as e:
+        return {
+            "symbol": symbol.upper(),
+            "data": [],
+            "error": str(e),
+        }
+
+@router.get("/api/stocks/{symbol}/documents/pdf")
+def get_stock_document_pdf(
+    symbol: str,
+    url: str = Query(..., description="URL PDF từ CafeF"),
+):
+    if not url.startswith("https://cafefnew.mediacdn.vn/Images/Uploaded/DuLieuDownload/BCTC/"):
+        raise HTTPException(
+            status_code=400,
+            detail="URL tài liệu không hợp lệ",
+        )
+
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://cafef.vn/",
+            },
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        content_type = response.headers.get(
+            "Content-Type",
+            "application/pdf",
+        )
+
+        if "pdf" not in content_type.lower():
+            raise HTTPException(
+                status_code=502,
+                detail="CafeF không trả về file PDF",
+            )
+
+        return StreamingResponse(
+            BytesIO(response.content),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{symbol.upper()}_report.pdf"',
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Không thể tải tài liệu từ CafeF: {str(e)}",
+        )
