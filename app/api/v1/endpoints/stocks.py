@@ -973,9 +973,8 @@ def get_stock_document_pdf(
         )
 
 
-@router.get("/api/stocks/report_sumary")
+@router.get("/api/stocks/{symbol}/report_sumary")
 def get_Report_Summary(
-    symbol: str,
     page_index: int = Query(1, alias="pageIndex", ge=1),
     page_size: int = Query(4, alias="pageSize", ge=1, le=100),
     report_type: str = Query("ALL", alias="reportType"),
