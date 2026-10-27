@@ -971,3 +971,74 @@ def get_stock_document_pdf(
             status_code=502,
             detail=f"Không thể tải tài liệu từ CafeF: {str(e)}",
         )
+
+
+@router.get("/api/stocks/report_sumary")
+def get_Report_Summary(
+    symbol: str,
+    page_index: int = Query(1, alias="pageIndex", ge=1),
+    page_size: int = Query(4, alias="pageSize", ge=1, le=100),
+    report_type: str = Query("ALL", alias="reportType"),
+    type_time: str = Query("QUY", alias="TypeTime"),
+):
+    symbol = symbol.upper().strip()
+
+    url = "https://apiweb.cafef.vn/api/v1/BCTC/GetReportSummary"
+
+    params = {
+        "symbol": symbol,
+        "pageIndex": page_index,
+        "pageSize": page_size,
+        "reportType": report_type,
+        "TypeTime": type_time,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"https://cafef.vn/du-lieu/{symbol}.chn",
+        "Origin": "https://cafef.vn",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not result.get("isSuccess"):
+            return {
+                "symbol": symbol,
+                "data": [],
+                "error": "CafeF không trả về dữ liệu thành công",
+            }
+
+        value = result.get("value") or {}
+
+        return {
+            "symbol": symbol,
+            "count": value.get("count", 0),
+            "unit": value.get("unit"),
+            "listType": value.get("listType", []),
+            "templace": value.get("templace", []),
+            "data": value.get("data", []),
+        }
+
+    except requests.RequestException as e:
+        return {
+            "symbol": symbol,
+            "data": [],
+            "error": str(e),
+        }
+
+    except ValueError as e:
+        return {
+            "symbol": symbol,
+            "data": [],
+            "error": f"Không thể đọc JSON từ CafeF: {e}",
+        }
