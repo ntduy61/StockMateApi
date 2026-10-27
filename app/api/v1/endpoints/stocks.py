@@ -981,12 +981,11 @@ def get_Report_Summary(
     report_type: str = Query("ALL", alias="reportType"),
     type_time: str = Query("QUY", alias="TypeTime"),
 ):
-    symbol = symbol.upper().strip()
 
     url = "https://apiweb.cafef.vn/api/v1/BCTC/GetReportSummary"
 
     params = {
-        "symbol": symbol,
+        "symbol": symbol.upper(),
         "pageIndex": page_index,
         "pageSize": page_size,
         "reportType": report_type,
@@ -996,7 +995,7 @@ def get_Report_Summary(
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json, text/plain, */*",
-        "Referer": f"https://cafef.vn/du-lieu/{symbol}.chn",
+        "Referer": f"https://cafef.vn/du-lieu/{symbol.upper()}.chn",
         "Origin": "https://cafef.vn",
     }
 
