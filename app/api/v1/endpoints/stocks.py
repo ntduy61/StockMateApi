@@ -15,6 +15,89 @@ from fastapi.responses import StreamingResponse
 from io import BytesIO
 
 router = APIRouter()
+
+CAFEF_BASE_URL = "https://cafef.vn"
+
+def parse_cafef_datetime(value: str | None):
+    if not value:
+        return None
+
+    match = re.search(
+        r"/Date\((\d+)\)/",
+        value,
+    )
+
+    if not match:
+        return None
+
+    timestamp = int(match.group(1)) / 1000
+
+    return datetime.fromtimestamp(
+        timestamp,
+        tz=timezone.utc,
+    ).isoformat()
+
+def parse_cafef_number(value):
+    """
+    Chuẩn hóa số theo định dạng CafeF Việt Nam.
+
+    '191.032' -> 191032
+    '0,01'    -> 0.01
+    '4,9'     -> 4.9
+    """
+    if value is None or value == "":
+        return None
+
+    value = str(value).strip()
+
+    # Có dấu phẩy: dấu phẩy là phần thập phân
+    if "," in value:
+        value = value.replace(".", "").replace(",", ".")
+
+    # Không có dấu phẩy: dấu chấm là phân cách hàng nghìn
+    else:
+        value = value.replace(".", "")
+
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+def parse_cafef_url(value):
+    """
+    CafeF có thể trả về URL dạng HTML anchor hoặc text thông thường.
+    """
+    if not value:
+        return None
+
+    value = unescape(str(value)).strip()
+
+    match = re.search(
+        r"""href=['"]([^'"]+)['"]""",
+        value,
+        re.IGNORECASE,
+    )
+
+    if match:
+        return urljoin(CAFEF_BASE_URL, match.group(1))
+
+    return None
+
+def clean_cafef_name(value):
+    """
+    Lấy tên hiển thị từ nội dung HTML nếu cần.
+    """
+    if not value:
+        return ""
+
+    value = unescape(str(value))
+
+    # Bóc phần text nằm trong thẻ HTML
+    value = re.sub(r"<[^>]+>", "", value)
+
+    return value.strip()
+
+
 @router.get("/api/stocks")
 def get_stocks(
     exchange: str | None = None,
@@ -113,9 +196,6 @@ def create_stock(
     )
 
 
-
-
-
 @router.get("/api/stocks/{symbol}/financial_index")
 def get_stock_financial_index(
     symbol: str,
@@ -135,10 +215,7 @@ def get_stock_financial_index(
             detail="Không tìm thấy cổ phiếu",
         )
 
-    url = (
-        "https://cafef.vn/du-lieu/Ajax/PageNew/"
-        "ChiSoTaiChinh.ashx"
-    )
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/ChiSoTaiChinh.ashx"
 
     try:
         response = requests.get(
@@ -146,7 +223,7 @@ def get_stock_financial_index(
             params={"Symbol": symbol},
             headers={
                 "User-Agent": "Mozilla/5.0",
-                "Referer": "https://cafef.vn/",
+                "Referer": f"{CAFEF_BASE_URL}/",
             },
             timeout=10,
         )
@@ -195,11 +272,7 @@ def get_stock_realtime(
 ):
     symbol = symbol.upper()
 
-
-    url = (
-        "https://cafef.vn/du-lieu/Ajax/PageNew/"
-        "PriceRealTimeHeader.ashx"
-    )
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/PriceRealTimeHeader.ashx"
 
     try:
         response = requests.get(
@@ -207,7 +280,7 @@ def get_stock_realtime(
             params={"Symbol": symbol},
             headers={
                 "User-Agent": "Mozilla/5.0",
-                "Referer": "https://cafef.vn/",
+                "Referer": f"{CAFEF_BASE_URL}/",
             },
             timeout=10,
         )
@@ -285,11 +358,7 @@ def get_stock_market_info(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-
-    url = (
-        "https://cafef.vn/du-lieu/Ajax/PageNew/"
-        "RealtimePrice.ashx"
-    )
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/RealtimePrice.ashx"
 
     try:
         response = requests.get(
@@ -299,7 +368,7 @@ def get_stock_market_info(
             },
             headers={
                 "User-Agent": "Mozilla/5.0",
-                "Referer": "https://cafef.vn/",
+                "Referer": f"{CAFEF_BASE_URL}/",
             },
             timeout=10,
         )
@@ -347,29 +416,6 @@ def get_stock_market_info(
         )
 
 
-
-
-
-def parse_cafef_datetime(value: str | None):
-    if not value:
-        return None
-
-    match = re.search(
-        r"/Date\((\d+)\)/",
-        value,
-    )
-
-    if not match:
-        return None
-
-    timestamp = int(match.group(1)) / 1000
-
-    return datetime.fromtimestamp(
-        timestamp,
-        tz=timezone.utc,
-    ).isoformat()
-
-
 @router.get("/api/stocks/{symbol}/events")
 def get_stock_events(
     symbol: str,
@@ -388,11 +434,8 @@ def get_stock_events(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-
-    url = (
-        "https://cafef.vn/du-lieu/Ajax/PageNew/"
-        "LichSuKien.ashx"
-    )
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/LichSuKien.ashx"
+    
 
     try:
         response = requests.get(
@@ -402,7 +445,7 @@ def get_stock_events(
             },
             headers={
                 "User-Agent": "Mozilla/5.0",
-                "Referer": "https://cafef.vn/",
+                "Referer": f"{CAFEF_BASE_URL}/",
             },
             timeout=10,
         )
@@ -447,74 +490,6 @@ def get_stock_events(
         )
 
 
-
-
-CAFEF_BASE_URL = "https://cafef.vn"
-
-
-def parse_cafef_number(value):
-    """
-    Chuẩn hóa số theo định dạng CafeF Việt Nam.
-
-    '191.032' -> 191032
-    '0,01'    -> 0.01
-    '4,9'     -> 4.9
-    """
-    if value is None or value == "":
-        return None
-
-    value = str(value).strip()
-
-    # Có dấu phẩy: dấu phẩy là phần thập phân
-    if "," in value:
-        value = value.replace(".", "").replace(",", ".")
-
-    # Không có dấu phẩy: dấu chấm là phân cách hàng nghìn
-    else:
-        value = value.replace(".", "")
-
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return None
-
-
-def parse_cafef_url(value):
-    """
-    CafeF có thể trả về URL dạng HTML anchor hoặc text thông thường.
-    """
-    if not value:
-        return None
-
-    value = unescape(str(value)).strip()
-
-    match = re.search(
-        r"""href=['"]([^'"]+)['"]""",
-        value,
-        re.IGNORECASE,
-    )
-
-    if match:
-        return urljoin(CAFEF_BASE_URL, match.group(1))
-
-    return None
-
-
-def clean_cafef_name(value):
-    """
-    Lấy tên hiển thị từ nội dung HTML nếu cần.
-    """
-    if not value:
-        return ""
-
-    value = unescape(str(value))
-
-    # Bóc phần text nằm trong thẻ HTML
-    value = re.sub(r"<[^>]+>", "", value)
-
-    return value.strip()
-
-
 @router.get("/api/stocks/{symbol}/ownership")
 def get_stock_ownership(
     symbol: str,
@@ -531,11 +506,8 @@ def get_stock_ownership(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-
-    url = (
-        "https://cafef.vn/du-lieu/Ajax/PageNew/"
-        f"CoCauSoHuu.ashx?Symbol={symbol.lower()}"
-    )
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/CoCauSoHuu.ashx?Symbol={symbol.lower()}"
+        
 
     try:
         response = requests.get(
@@ -626,11 +598,7 @@ def get_foreign_trading(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-
-    url = (
-        "https://cafef.vn/du-lieu/Ajax/PageNew/"
-        f"GetDataNDTNN.ashx?Symbol={symbol.lower()}"
-    )
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/GetDataNDTNN.ashx?Symbol={symbol.lower()}"
 
     try:
         response = requests.get(
@@ -775,7 +743,7 @@ def get_stock_price_history(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-
+   
     url = (
         "https://cafefnew.mediacdn.vn/Images/Uploaded/"
         f"DuLieuDownload/Liveboard/{symbol}_PriceHistory.json"
@@ -887,7 +855,8 @@ def get_stock_documents(
     report_type: int = Query(1, alias="Type"),
     year: int = Query(0, alias="Year"),
 ):
-    url = "https://cafef.vn/du-lieu/Ajax/PageNew/FileBCTC.ashx"
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/FileBCTC.ashx"
+   
 
     params = {
         "Symbol": symbol.upper(),
@@ -897,7 +866,7 @@ def get_stock_documents(
 
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Referer": f"https://cafef.vn/du-lieu/{symbol.upper()}.chn",
+        "Referer": f"{CAFEF_BASE_URL}/du-lieu/{symbol.upper()}.chn",
     }
 
     try:
@@ -928,18 +897,14 @@ def get_stock_document_pdf(
     symbol: str,
     url: str = Query(..., description="URL PDF từ CafeF"),
 ):
-    # if not url.startswith("https://cafefnew.mediacdn.vn"):
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="URL tài liệu không hợp lệ",
-    #     )
+
 
     try:
         response = requests.get(
             url,
             headers={
                 "User-Agent": "Mozilla/5.0",
-                "Referer": "https://cafef.vn/",
+                "Referer": f"{CAFEF_BASE_URL}/",
             },
             timeout=30,
         )
@@ -995,8 +960,8 @@ def get_Report_Summary(
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json, text/plain, */*",
-        "Referer": f"https://cafef.vn/du-lieu/{symbol.upper()}.chn",
-        "Origin": "https://cafef.vn",
+        "Referer": f"{CAFEF_BASE_URL}/du-lieu/{symbol.upper()}.chn",
+        "Origin": f"{CAFEF_BASE_URL}",
     }
 
     try:
@@ -1041,3 +1006,114 @@ def get_Report_Summary(
             "data": [],
             "error": f"Không thể đọc JSON từ CafeF: {e}",
         }
+
+
+
+@router.get("/api/stocks/{symbol}/list_ceo")
+def get_List_Ceo(symbol: str):
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/ListCeo.ashx"
+
+    symbol = symbol.strip().upper()
+
+    params = {
+        "Symbol": symbol,
+        "PositionGroup": 0,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"{CAFEF_BASE_URL}/",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if not isinstance(result, dict):
+            return {
+                "symbol": symbol,
+                "success": False,
+                "message": "Dữ liệu CafeF không đúng định dạng.",
+                "data": [],
+            }
+
+        groups = result.get("Data") or []
+
+        normalized_groups = []
+
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+
+            members = []
+
+            for person in group.get("values") or []:
+                if not isinstance(person, dict):
+                    continue
+
+                image = person.get("Image") or ""
+                detail_url = person.get("LinkCeoDetail") or ""
+
+                members.append({
+                    "code": person.get("CeoCode"),
+                    "name": person.get("Name"),
+                    "position": person.get("Position"),
+                    "position_order": person.get("PositionOrder"),
+                    "group_id": person.get("GroupID"),
+                    "age": person.get("old"),
+                    "image_url": (
+                        f"{CAFEF_BASE_URL}{image}"
+                        if image.startswith("/")
+                        else image or None
+                    ),
+                    "detail_url": (
+                        f"{CAFEF_BASE_URL}{detail_url}"
+                        if detail_url.startswith("/")
+                        else detail_url or None
+                    ),
+                    "schools": person.get("CeoSchools") or [],
+                    "positions": person.get("ceoPositions") or [],
+                })
+
+            normalized_groups.append({
+                "type": group.get("Type"),
+                "group_name": group.get("GroupName"),
+                "count": len(members),
+                "members": members,
+            })
+
+        return {
+            "symbol": symbol,
+            "success": bool(result.get("Success", False)),
+            "message": result.get("Message"),
+            "total": sum(
+                group["count"] for group in normalized_groups
+            ),
+            "groups": normalized_groups,
+        }
+
+    except requests.RequestException as e:
+        return {
+            "symbol": symbol,
+            "success": False,
+            "message": f"Lỗi gọi CafeF: {e}",
+            "total": 0,
+            "groups": [],
+        }
+
+    except ValueError as e:
+        return {
+            "symbol": symbol,
+            "success": False,
+            "message": f"Không thể đọc JSON từ CafeF: {e}",
+            "total": 0,
+            "groups": [],
+        }
+
