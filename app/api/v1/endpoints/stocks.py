@@ -1007,7 +1007,70 @@ def get_Report_Summary(
             "error": f"Không thể đọc JSON từ CafeF: {e}",
         }
 
+@router.get("/api/stocks/{symbol}/financial_indicators")
+def get_FinancialIndicators(
+    symbol: str,
+    page_index: int = Query(1, alias="pageIndex", ge=1),
+    page_size: int = Query(4, alias="pageSize", ge=1, le=100),
+):
 
+    url = "https://apiweb.cafef.vn/api/v1/BCTC/FinancialIndicators"
+
+    params = {
+        "symbol": symbol.upper(),
+        "pageIndex": page_index,
+        "pageSize": page_size
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"{CAFEF_BASE_URL}/du-lieu/{symbol.upper()}.chn",
+        "Origin": f"{CAFEF_BASE_URL}",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not result.get("isSuccess"):
+            return {
+                "symbol": symbol,
+                "data": [],
+                "error": "CafeF không trả về dữ liệu thành công",
+            }
+
+        value = result.get("value") or {}
+
+        return {
+            "symbol": symbol,
+            "count": value.get("count", 0),
+            "unit": value.get("unit"),
+            "listType": value.get("listType", []),
+            "templace": value.get("templace", []),
+            "data": value.get("data", []),
+        }
+
+    except requests.RequestException as e:
+        return {
+            "symbol": symbol,
+            "data": [],
+            "error": str(e),
+        }
+
+    except ValueError as e:
+        return {
+            "symbol": symbol,
+            "data": [],
+            "error": f"Không thể đọc JSON từ CafeF: {e}",
+        }
 
 @router.get("/api/stocks/{symbol}/list_ceo")
 def get_List_Ceo(symbol: str):
