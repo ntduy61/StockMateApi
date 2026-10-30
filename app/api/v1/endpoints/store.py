@@ -52,18 +52,75 @@ async def execute_store(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 1. Kiểm tra Store
-    config = STORE_REGISTRY.get(store_name)
-
-    # Kiểm tra tên Stored Procedure
+    # 1. Kiểm tra tên Stored Procedure
     if not re.fullmatch(r"[a-zA-Z0-9_]+", store_name):
         raise HTTPException(
             status_code=400,
             detail="Tên Stored Procedure không hợp lệ",
         )
 
-   
-    # 2. Nhận parameters
+    # 2. Lấy danh sách tham số từ MariaDB
+    try:
+        param_rows = db.execute(
+            text("""
+                SELECT
+                    PARAMETER_NAME,
+                    PARAMETER_MODE
+                FROM information_schema.PARAMETERS
+                WHERE SPECIFIC_SCHEMA = DATABASE()
+                  AND SPECIFIC_NAME = :store_name
+                  AND ROUTINE_TYPE = 'PROCEDURE'
+                ORDER BY ORDINAL_POSITION
+            """),
+            {"store_name": store_name},
+        ).mappings().all()
+
+        # Kiểm tra Store tồn tại
+        procedure_exists = db.execute(
+            text("""
+                SELECT COUNT(*)
+                FROM information_schema.ROUTINES
+                WHERE ROUTINE_SCHEMA = DATABASE()
+                  AND ROUTINE_NAME = :store_name
+                  AND ROUTINE_TYPE = 'PROCEDURE'
+            """),
+            {"store_name": store_name},
+        ).scalar()
+
+        if not procedure_exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Stored Procedure '{store_name}' không tồn tại",
+            )
+
+        # Hiện tại hỗ trợ các tham số IN
+        unsupported = [
+            p["PARAMETER_NAME"]
+            for p in param_rows
+            if p["PARAMETER_MODE"] in ("OUT", "INOUT")
+        ]
+
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail="Store hiện chỉ hỗ trợ tham số IN",
+            )
+
+        params = [
+            p["PARAMETER_NAME"]
+            for p in param_rows
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lỗi đọc thông tin Stored Procedure: {str(e)}",
+        )
+
+    # 3. Nhận parameters
     if request.method == "GET":
         input_data = dict(request.query_params)
     else:
@@ -81,8 +138,7 @@ async def execute_store(
                 detail="Dữ liệu phải là JSON object",
             )
 
-    params = config["params"]
-
+    # 4. Kiểm tra tham số
     missing = [
         key for key in params
         if key not in input_data
@@ -105,31 +161,22 @@ async def execute_store(
             detail=f"Tham số không hợp lệ: {', '.join(extra)}",
         )
 
-    # 3. Chuẩn bị câu lệnh CALL
     values = [input_data[key] for key in params]
 
-    placeholders = ", ".join(
-        [f":p{i}" for i in range(len(values))]
-    )
-
-    sql = f"CALL `{store_name}`({placeholders})"
-
-    bind_params = {
-        f"p{i}": value
-        for i, value in enumerate(values)
-    }
+    # 5. Thực thi Stored Procedure bằng PyMySQL
+    cursor = None
 
     try:
-        # 4. Thực thi Stored Procedure
-        result = db.connection().exec_driver_sql(
-            sql,
-            tuple(values),
-        )
+        connection = db.connection().connection
+        cursor = connection.cursor()
 
-        # 5. Đọc tất cả result sets
-        # Dùng DBAPI cursor để hỗ trợ nhiều SELECT
-        cursor = result.cursor
+        placeholders = ", ".join(["%s"] * len(values))
 
+        sql = f"CALL `{store_name}`({placeholders})"
+
+        cursor.execute(sql, values)
+
+        # 6. Đọc tất cả result sets
         data = {}
         index = 1
 
@@ -170,7 +217,15 @@ async def execute_store(
     except Exception as e:
         db.rollback()
 
+        # Ghi lỗi chi tiết vào log server
+        import logging
+        logging.exception("Stored Procedure execution failed")
+
         raise HTTPException(
             status_code=500,
             detail=f"Lỗi thực thi Stored Procedure: {str(e)}",
         )
+
+    finally:
+        if cursor:
+            cursor.close()
