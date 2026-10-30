@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.core.security import get_current_user
 from app.models.models import User
-
+import re
 router = APIRouter()
 
 
@@ -55,20 +55,15 @@ async def execute_store(
     # 1. Kiểm tra Store
     config = STORE_REGISTRY.get(store_name)
 
-    if not config:
+    # Kiểm tra tên Stored Procedure
+    if not re.fullmatch(r"[a-zA-Z0-9_]+", store_name):
         raise HTTPException(
-            status_code=404,
-            detail=f"Stored Procedure '{store_name}' không tồn tại",
+            status_code=400,
+            detail="Tên Stored Procedure không hợp lệ",
         )
 
-    # 2. Kiểm tra phương thức
-    if request.method not in config["methods"]:
-        raise HTTPException(
-            status_code=405,
-            detail="Phương thức không được hỗ trợ",
-        )
-
-    # 3. Nhận parameters
+   
+    # 2. Nhận parameters
     if request.method == "GET":
         input_data = dict(request.query_params)
     else:
@@ -110,7 +105,7 @@ async def execute_store(
             detail=f"Tham số không hợp lệ: {', '.join(extra)}",
         )
 
-    # 4. Chuẩn bị câu lệnh CALL
+    # 3. Chuẩn bị câu lệnh CALL
     values = [input_data[key] for key in params]
 
     placeholders = ", ".join(
@@ -125,13 +120,13 @@ async def execute_store(
     }
 
     try:
-        # 5. Thực thi Stored Procedure
+        # 4. Thực thi Stored Procedure
         result = db.connection().exec_driver_sql(
             sql,
             tuple(values),
         )
 
-        # 6. Đọc tất cả result sets
+        # 5. Đọc tất cả result sets
         # Dùng DBAPI cursor để hỗ trợ nhiều SELECT
         cursor = result.cursor
 
