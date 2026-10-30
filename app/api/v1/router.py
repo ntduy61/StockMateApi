@@ -4,7 +4,7 @@ from app.api.v1.endpoints import (
     health, auth, stocks, prices, financials, valuations, watchlist, sync_logs,
     price_alerts,
     notifications,
-    push,news
+    push,news, store
 )
 api_router = APIRouter()
 
@@ -20,4 +20,5 @@ api_router.include_router(price_alerts.router)
 api_router.include_router(notifications.router)
 api_router.include_router(push.router)
 api_router.include_router(news.router)
+api_router.include_router(store.router)
 
