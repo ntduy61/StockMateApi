@@ -720,14 +720,15 @@ def get_foreign_trading(
     }
 
 
+
 @router.get("/api/stocks/{symbol}/price-history")
 def get_stock_price_history(
     symbol: str,
-    days: int = Query(
-        365,
+    days: Optional[int] = Query(
+        None,
         ge=1,
         le=3650,
-        description="Số ngày lịch cần lấy dữ liệu, mặc định 365 ngày",
+        description="Số ngày lịch cần lấy dữ liệu. Không truyền thì lấy toàn bộ lịch sử giá.",
     ),
     db: Session = Depends(get_db),
 ):
@@ -743,7 +744,7 @@ def get_stock_price_history(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-   
+
     url = (
         "https://cafefnew.mediacdn.vn/Images/Uploaded/"
         f"DuLieuDownload/Liveboard/{symbol}_PriceHistory.json"
@@ -784,9 +785,10 @@ def get_stock_price_history(
             detail="Định dạng dữ liệu lịch sử giá không hợp lệ",
         )
 
-    # Ngày bắt đầu lấy dữ liệu
     today = date.today()
-    from_date = today - timedelta(days=days)
+
+    # Chỉ tính ngày bắt đầu khi có truyền days
+    from_date = today - timedelta(days=days) if days is not None else None
 
     price_history = []
 
@@ -797,7 +799,6 @@ def get_stock_price_history(
             continue
 
         try:
-            # Ví dụ: 2026-10-23T00:00:00
             trade_date = datetime.fromisoformat(
                 trade_date_raw
             ).date()
@@ -805,9 +806,10 @@ def get_stock_price_history(
         except (ValueError, TypeError):
             continue
 
-        # Chỉ lấy dữ liệu trong khoảng ngày yêu cầu
-        if trade_date < from_date or trade_date > today:
-            continue
+        # Có truyền days thì mới lọc ngày
+        if from_date is not None:
+            if trade_date < from_date or trade_date > today:
+                continue
 
         price_history.append({
             "symbol": item.get("Symbol", symbol),
@@ -835,7 +837,7 @@ def get_stock_price_history(
             "agreed_value": item.get("AgreedValue", 0),
         })
 
-    # Sắp xếp theo ngày tăng dần để biểu đồ dễ sử dụng
+    # Sắp xếp theo ngày tăng dần
     price_history.sort(
         key=lambda x: x["trade_date"]
     )
@@ -843,11 +845,14 @@ def get_stock_price_history(
     return {
         "symbol": symbol,
         "days": days,
-        "from_date": from_date.isoformat(),
+        "from_date": (
+            from_date.isoformat() if from_date else None
+        ),
         "to_date": today.isoformat(),
         "total": len(price_history),
         "data": price_history,
     }
+
 
 @router.get("/api/stocks/{symbol}/documents")
 def get_stock_documents(
