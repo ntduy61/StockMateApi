@@ -720,7 +720,7 @@ def get_foreign_trading(
     }
 
 
-
+from typing import Optional
 @router.get("/api/stocks/{symbol}/price-history")
 def get_stock_price_history(
     symbol: str,
