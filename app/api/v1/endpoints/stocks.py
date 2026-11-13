@@ -1186,7 +1186,7 @@ def get_List_Ceo(symbol: str):
         }
 
 
-@router.get("/api/stocks/StockMarket")
+@router.get("/api/StockMarket")
 def get_StockMarket():
 
     url = "https://msh-appdata.cafef.vn/rest-api/api/v1/StockMarket"
