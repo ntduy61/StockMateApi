@@ -1186,11 +1186,10 @@ def get_List_Ceo(symbol: str):
         }
 
 
+
 @router.get("/api/StockMarket")
 def get_StockMarket():
-
     url = "https://msh-appdata.cafef.vn/rest-api/api/v1/StockMarket"
-
 
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -1209,26 +1208,27 @@ def get_StockMarket():
 
         result = response.json()
 
-        if not result.get("isSuccess"):
+        # CafeF trả về trực tiếp object chứa data
+        data = result.get("data", [])
+
+        if not isinstance(data, list):
             return {
                 "data": [],
-                "error": "CafeF không trả về dữ liệu thành công",
+                "error": "Cấu trúc dữ liệu CafeF không hợp lệ",
             }
 
-        value = result.get("value") or {}
-
         return {
-            "data": value.get("data", []),
+            "data": data,
         }
 
     except requests.RequestException as e:
         return {
             "data": [],
-            "error": str(e),
+            "error": f"Lỗi kết nối CafeF: {str(e)}",
         }
 
     except ValueError as e:
         return {
             "data": [],
-            "error": f"Không thể đọc JSON từ CafeF: {e}",
+            "error": f"Không thể đọc JSON từ CafeF: {str(e)}",
         }
