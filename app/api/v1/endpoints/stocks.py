@@ -1185,3 +1185,50 @@ def get_List_Ceo(symbol: str):
             "groups": [],
         }
 
+
+@router.get("/api/stocks/StockMarket")
+def get_StockMarket():
+
+    url = "https://msh-appdata.cafef.vn/rest-api/api/v1/StockMarket"
+
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://liveboard.cafef.vn/",
+        "Origin": "https://liveboard.cafef.vn",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not result.get("isSuccess"):
+            return {
+                "data": [],
+                "error": "CafeF không trả về dữ liệu thành công",
+            }
+
+        value = result.get("value") or {}
+
+        return {
+            "data": value.get("data", []),
+        }
+
+    except requests.RequestException as e:
+        return {
+            "data": [],
+            "error": str(e),
+        }
+
+    except ValueError as e:
+        return {
+            "data": [],
+            "error": f"Không thể đọc JSON từ CafeF: {e}",
+        }
