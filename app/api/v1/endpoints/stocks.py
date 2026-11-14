@@ -1232,3 +1232,60 @@ def get_StockMarket():
             "data": [],
             "error": f"Không thể đọc JSON từ CafeF: {str(e)}",
         }
+
+@router.get("/api/StockMarketBoard")
+def get_StockMarketBoard(floorcode: int = 11):
+    url = "https://cafef.vn/du-lieu/ajax/ajaxliveboard.ashx"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://liveboard.cafef.vn/",
+        "Origin": "https://liveboard.cafef.vn",
+    }
+
+    params = {
+        "floorcode": floorcode
+    }
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=20,
+        )
+
+        response.raise_for_status()
+
+        result = response.json()
+
+        # CafeF trả về object chứa Data, Message, Success
+        data = result.get("Data", [])
+
+        if not isinstance(data, list):
+            return {
+                "data": [],
+                "success": False,
+                "error": "Cấu trúc dữ liệu CafeF không hợp lệ",
+            }
+
+        return {
+            "data": data,
+            "success": result.get("Success", True),
+            "message": result.get("Message"),
+        }
+
+    except requests.RequestException as e:
+        return {
+            "data": [],
+            "success": False,
+            "error": f"Lỗi kết nối CafeF: {str(e)}",
+        }
+
+    except ValueError as e:
+        return {
+            "data": [],
+            "success": False,
+            "error": f"Không thể đọc JSON từ CafeF: {str(e)}",
+        }
