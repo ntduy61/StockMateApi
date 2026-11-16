@@ -2,7 +2,7 @@ import requests
 import re
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import (User, Stock)
@@ -13,8 +13,11 @@ from urllib.parse import urljoin
 from app.utils.serializers import to_dict
 from fastapi.responses import StreamingResponse
 from io import BytesIO
+import logging
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 CAFEF_BASE_URL = "https://cafef.vn"
 
@@ -421,8 +424,9 @@ def get_stock_events(
     symbol: str,
     db: Session = Depends(get_db),
 ):
-    symbol = symbol.upper()
+    symbol = symbol.strip().upper()
 
+    # 1. Kiểm tra cổ phiếu
     stock = db.scalar(
         select(Stock).where(
             Stock.symbol == symbol
@@ -434,60 +438,164 @@ def get_stock_events(
             status_code=404,
             detail="Không tìm thấy cổ phiếu",
         )
-    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/LichSuKien.ashx"
-    
 
-    try:
-        response = requests.get(
-            url,
-            params={
-                "Symbol": symbol,
-            },
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": f"{CAFEF_BASE_URL}/",
-            },
-            timeout=10,
-        )
+    # 2. Lấy sự kiện và nội dung từ database
+    rows = db.execute(
+        text("""
+            SELECT
+                e.id,
+                e.event_datetime,
+                e.event_type,
+                d.content,
+                d.sort_order
+            FROM stock_events e
+            LEFT JOIN stock_event_details d
+                ON d.event_id = e.id
+            WHERE e.symbol = :symbol
+              AND e.source = 'CAFEF'
+            ORDER BY
+                e.event_datetime DESC,
+                e.id DESC,
+                d.sort_order ASC,
+                d.id ASC
+        """),
+        {
+            "symbol": symbol,
+        },
+    ).mappings().all()
 
-        response.raise_for_status()
+    # 3. Gom nội dung theo từng sự kiện
+    events_dict = {}
 
-        result = response.json()
+    for row in rows:
+        event_id = row["id"]
 
-        if not result.get("Success"):
-            raise HTTPException(
-                status_code=502,
-                detail="Không thể lấy lịch sử sự kiện từ CafeF",
+        if event_id not in events_dict:
+            events_dict[event_id] = {
+                "time": row["event_datetime"],
+                "type": row["event_type"],
+                "texts": [],
+            }
+
+        if row["content"]:
+            events_dict[event_id]["texts"].append(
+                row["content"]
             )
 
-        events = []
+    events = list(events_dict.values())
 
-        for item in result.get("Data", []):
-            events.append({
-                "time": parse_cafef_datetime(
-                    item.get("Time")
-                ),
-                "type": item.get("type"),
-                "texts": item.get("Text") or [],
-            })
+    # 4. Trả kết quả
+    return {
+        "symbol": symbol,
+        "total": len(events),
+        "events": events,
+    }
 
+@router.get("/api/events")
+def get_market_events(
+    page_index: int = Query(1, alias="pageIndex", ge=1),
+    page_size: int = Query(20, alias="pageSize", ge=1, le=100),
+    symbol: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    symbol = symbol.strip().upper() if symbol else None
+
+    params = {
+        "symbol": symbol,
+        "limit": page_size,
+        "offset": (page_index - 1) * page_size,
+    }
+
+    # Điều kiện lọc mã cổ phiếu
+    where_sql = """
+        WHERE e.source = 'CAFEF'
+    """
+
+    if symbol:
+        where_sql += " AND e.symbol = :symbol"
+
+    # 1. Tổng số sự kiện
+    total = db.execute(
+        text(f"""
+            SELECT COUNT(*)
+            FROM stock_events e
+            {where_sql}
+        """),
+        params,
+    ).scalar() or 0
+
+    # 2. Lấy danh sách sự kiện theo trang
+    events = db.execute(
+        text(f"""
+            SELECT
+                e.id,
+                e.symbol,
+                e.event_datetime,
+                e.event_type
+            FROM stock_events e
+            {where_sql}
+            ORDER BY
+                e.event_datetime DESC,
+                e.id DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        params,
+    ).mappings().all()
+
+    if not events:
         return {
-            "symbol": symbol,
-            "total": len(events),
-            "events": events,
+            "total": total,
+            "pageIndex": page_index,
+            "pageSize": page_size,
+            "events": [],
         }
 
-    except requests.RequestException:
-        raise HTTPException(
-            status_code=502,
-            detail="Không thể kết nối CafeF",
+    event_ids = [item["id"] for item in events]
+
+    # 3. Lấy nội dung của các sự kiện
+    detail_rows = db.execute(
+        text("""
+            SELECT
+                event_id,
+                content,
+                sort_order
+            FROM stock_event_details
+            WHERE event_id IN :event_ids
+            ORDER BY sort_order ASC, id ASC
+        """).bindparams(
+            bindparam("event_ids", expanding=True)
+        ),
+        {
+            "event_ids": event_ids,
+        },
+    ).mappings().all()
+
+    details_map = {}
+
+    for row in detail_rows:
+        details_map.setdefault(row["event_id"], []).append(
+            row["content"]
         )
 
-    except ValueError:
-        raise HTTPException(
-            status_code=502,
-            detail="Dữ liệu sự kiện CafeF không hợp lệ",
-        )
+    # 4. Ghép kết quả
+    result = []
+
+    for event in events:
+        result.append({
+            "id": event["id"],
+            "symbol": event["symbol"],
+            "time": event["event_datetime"],
+            "type": event["event_type"],
+            "texts": details_map.get(event["id"], []),
+        })
+
+    return {
+        "total": total,
+        "pageIndex": page_index,
+        "pageSize": page_size,
+        "events": result,
+    }
+
 
 
 @router.get("/api/stocks/{symbol}/ownership")
@@ -1012,70 +1120,488 @@ def get_Report_Summary(
             "error": f"Không thể đọc JSON từ CafeF: {e}",
         }
 
+
+
 @router.get("/api/stocks/{symbol}/financial_indicators")
 def get_FinancialIndicators(
     symbol: str,
     page_index: int = Query(1, alias="pageIndex", ge=1),
-    page_size: int = Query(4, alias="pageSize", ge=1, le=100),
+    page_size: int = Query(10, alias="pageSize", ge=1, le=100),
 ):
+    symbol = symbol.upper().strip()
 
-    url = "https://apiweb.cafef.vn/api/v1/BCTC/FinancialIndicators"
-
-    params = {
-        "symbol": symbol.upper(),
-        "pageIndex": page_index,
-        "pageSize": page_size
-    }
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": f"{CAFEF_BASE_URL}/du-lieu/{symbol.upper()}.chn",
-        "Origin": f"{CAFEF_BASE_URL}",
-    }
+    db = next(get_db())
 
     try:
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=20,
-        )
-        response.raise_for_status()
+        # 1. Lấy danh mục chỉ tiêu
+        definitions = db.execute(
+            text("""
+                SELECT
+                    code,
+                    name,
+                    metric_number AS number
+                FROM stockmate.financial_metric_definitions
+                WHERE is_active = 1
+                ORDER BY metric_number
+            """)
+        ).mappings().all()
 
-        result = response.json()
+        # 2. Đếm số kỳ dữ liệu
+        count = db.execute(
+            text("""
+                SELECT COUNT(DISTINCT CONCAT(
+                    fiscal_year, '-', fiscal_quarter
+                ))
+                FROM stockmate.stock_financial_metrics
+                WHERE symbol = :symbol
+                  AND source = 'CAFEF'
+            """),
+            {"symbol": symbol},
+        ).scalar() or 0
 
-        if not result.get("isSuccess"):
-            return {
+        # 3. Lấy danh sách kỳ báo cáo
+        periods = db.execute(
+            text("""
+                SELECT DISTINCT
+                    fiscal_year,
+                    fiscal_quarter,
+                    period_type,
+                    data_time
+                FROM stockmate.stock_financial_metrics
+                WHERE symbol = :symbol
+                  AND source = 'CAFEF'
+                ORDER BY fiscal_year DESC, fiscal_quarter DESC
+                LIMIT :limit OFFSET :offset
+            """),
+            {
                 "symbol": symbol,
-                "data": [],
-                "error": "CafeF không trả về dữ liệu thành công",
+                "limit": page_size,
+                "offset": (page_index - 1) * page_size,
+            },
+        ).mappings().all()
+
+        # 4. Lấy dữ liệu chỉ tiêu theo từng kỳ
+        data = []
+
+        for period in periods:
+
+            metrics = db.execute(
+                text("""
+                    SELECT
+                        m.metric_value AS value,
+                        d.name,
+                        m.metric_code AS code,
+                        d.metric_number AS number
+                    FROM stockmate.stock_financial_metrics m
+                    LEFT JOIN stockmate.financial_metric_definitions d
+                        ON d.code = m.metric_code
+                    WHERE m.symbol = :symbol
+                      AND m.fiscal_year = :year
+                      AND m.fiscal_quarter = :quarter
+                      AND m.source = 'CAFEF'
+                    ORDER BY d.metric_number
+                """),
+                {
+                    "symbol": symbol,
+                    "year": period["fiscal_year"],
+                    "quarter": period["fiscal_quarter"],
+                },
+            ).mappings().all()
+
+            data.append({
+                "symbol": symbol,
+                "year": period["fiscal_year"],
+                "quater": period["fiscal_quarter"],
+                "type": period["period_type"],
+                "content": None,
+                "time": (
+                    period["data_time"].isoformat()
+                    if period["data_time"]
+                    else None
+                ),
+                "data": [
+                    {
+                        "value": float(metric["value"])
+                            if metric["value"] is not None else None,
+                        "name": metric["name"],
+                        "code": metric["code"],
+                        "number": metric["number"],
+                    }
+                    for metric in metrics
+                ],
+            })
+
+        # 5. Trả response tương tự CafeF
+        return {
+            "isSuccess": True,
+            "value": {
+                "count": count,
+                "name": symbol,
+                "templace": [
+                    {
+                        "name": item["name"],
+                        "code": item["code"],
+                        "number": item["number"],
+                    }
+                    for item in definitions
+                ],
+                "data": data,
+            },
+        }
+
+    except Exception as e:
+        logger.exception(
+            "Lỗi lấy Financial Indicators của %s",
+            symbol,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Không thể lấy dữ liệu chỉ tiêu tài chính",
+        )
+
+    finally:
+        db.close()
+
+@router.get("/api/stock-filters/metrics")
+def get_stock_filter_metrics(
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        text("""
+            SELECT
+                code,
+                name,
+                metric_number AS number,
+                unit
+            FROM stockmate.financial_metric_definitions
+            WHERE is_active = 1
+            ORDER BY metric_number
+        """)
+    ).mappings().all()
+
+    return {
+        "items": [
+            {
+                "code": row["code"],
+                "name": row["name"],
+                "number": row["number"],
+                "unit": row["unit"],
+            }
+            for row in rows
+        ]
+    }
+
+from typing import Literal
+from pydantic import BaseModel, Field
+class StockFilterCondition(BaseModel):
+    code: str
+    operator: Literal[
+        "gt", "gte", "lt", "lte", "eq", "between"
+    ]
+    value: float
+    value_to: float | None = None
+
+
+class StockFilterRequest(BaseModel):
+    conditions: list[StockFilterCondition] = Field(
+        min_length=1,
+        max_length=20,
+    )
+    pageIndex: int = Field(default=1, ge=1)
+    pageSize: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/api/stock-filters/search")
+def search_stocks_by_financial_metrics(
+    request: StockFilterRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        # 1. Kiểm tra các mã chỉ tiêu có tồn tại và đang hoạt động
+        codes = list({
+            condition.code.strip()
+            for condition in request.conditions
+        })
+
+        definitions = db.execute(
+            text("""
+                SELECT code, name, unit
+                FROM stockmate.financial_metric_definitions
+                WHERE is_active = 1
+                  AND code IN :codes
+            """).bindparams(
+                bindparam("codes", expanding=True)
+            ),
+            {"codes": codes},
+        ).mappings().all()
+
+        definition_map = {
+            row["code"]: row
+            for row in definitions
+        }
+
+        missing_codes = [
+            code for code in codes
+            if code not in definition_map
+        ]
+
+        if missing_codes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Chỉ tiêu không hợp lệ: {', '.join(missing_codes)}",
+            )
+
+        # 2. Xây dựng điều kiện lọc
+        operator_map = {
+            "gt": ">",
+            "gte": ">=",
+            "lt": "<",
+            "lte": "<=",
+            "eq": "=",
+        }
+
+        conditions_sql = []
+        params = {}
+
+        for index, condition in enumerate(request.conditions):
+            code = condition.code.strip()
+
+            if condition.operator == "between":
+                if condition.value_to is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Chỉ tiêu {code} cần có value_to",
+                    )
+
+                if condition.value > condition.value_to:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Khoảng giá trị của {code} không hợp lệ",
+                    )
+
+                conditions_sql.append(f"""
+                    EXISTS (
+                        SELECT 1
+                        FROM stockmate.stock_financial_metrics m
+                        WHERE m.symbol = s.symbol
+                          AND m.source = 'CAFEF'
+                          AND m.metric_code = :code_{index}
+                          AND m.fiscal_year = lp.fiscal_year
+                          AND m.fiscal_quarter = lp.fiscal_quarter
+                          AND m.metric_value BETWEEN
+                              :value_{index}
+                              AND :value_to_{index}
+                    )
+                """)
+
+                params[f"code_{index}"] = code
+                params[f"value_{index}"] = condition.value
+                params[f"value_to_{index}"] = condition.value_to
+
+            else:
+                operator = operator_map[condition.operator]
+
+                conditions_sql.append(f"""
+                    EXISTS (
+                        SELECT 1
+                        FROM stockmate.stock_financial_metrics m
+                        WHERE m.symbol = s.symbol
+                          AND m.source = 'CAFEF'
+                          AND m.metric_code = :code_{index}
+                          AND m.fiscal_year = lp.fiscal_year
+                          AND m.fiscal_quarter = lp.fiscal_quarter
+                          AND m.metric_value {operator} :value_{index}
+                    )
+                """)
+
+                params[f"code_{index}"] = code
+                params[f"value_{index}"] = condition.value
+
+        where_conditions = " AND ".join(conditions_sql)
+
+        # 3. Xác định kỳ báo cáo mới nhất của từng cổ phiếu
+        latest_period_cte = """
+            WITH latest_year AS (
+                SELECT
+                    symbol,
+                    MAX(fiscal_year) AS fiscal_year
+                FROM stockmate.stock_financial_metrics
+                WHERE source = 'CAFEF'
+                GROUP BY symbol
+            ),
+            latest_period AS (
+                SELECT
+                    m.symbol,
+                    m.fiscal_year,
+                    MAX(m.fiscal_quarter) AS fiscal_quarter
+                FROM stockmate.stock_financial_metrics m
+                INNER JOIN latest_year y
+                    ON y.symbol = m.symbol
+                   AND y.fiscal_year = m.fiscal_year
+                WHERE m.source = 'CAFEF'
+                GROUP BY m.symbol, m.fiscal_year
+            )
+        """
+
+        # 4. Đếm tổng số cổ phiếu phù hợp
+        count_sql = text(f"""
+            {latest_period_cte}
+            SELECT COUNT(*)
+            FROM stockmate.stocks s
+            INNER JOIN latest_period lp
+                ON lp.symbol = s.symbol
+            WHERE s.symbol IS NOT NULL
+              AND TRIM(s.symbol) <> ''
+              AND {where_conditions}
+        """)
+
+        total = db.execute(
+            count_sql,
+            params,
+        ).scalar() or 0
+
+        # 5. Lấy danh sách cổ phiếu
+        result_params = {
+            **params,
+            "limit": request.pageSize,
+            "offset": (request.pageIndex - 1) * request.pageSize,
+        }
+
+        stocks = db.execute(
+            text(f"""
+                {latest_period_cte}
+                SELECT
+                    s.symbol,
+                    lp.fiscal_year,
+                    lp.fiscal_quarter
+                FROM stockmate.stocks s
+                INNER JOIN latest_period lp
+                    ON lp.symbol = s.symbol
+                WHERE s.symbol IS NOT NULL
+                  AND TRIM(s.symbol) <> ''
+                  AND {where_conditions}
+                ORDER BY s.symbol
+                LIMIT :limit OFFSET :offset
+            """),
+            result_params,
+        ).mappings().all()
+
+        if not stocks:
+            return {
+                "total": total,
+                "pageIndex": request.pageIndex,
+                "pageSize": request.pageSize,
+                "items": [],
             }
 
-        value = result.get("value") or {}
+        # 6. Lấy giá trị các chỉ tiêu đã chọn để hiển thị kết quả
+        symbols = [row["symbol"] for row in stocks]
+
+        metric_rows = db.execute(
+            text("""
+                SELECT
+                    m.symbol,
+                    m.metric_code,
+                    m.metric_value
+                FROM stockmate.stock_financial_metrics m
+                WHERE m.source = 'CAFEF'
+                  AND m.symbol IN :symbols
+                  AND m.metric_code IN :codes
+                  AND (
+                      m.symbol,
+                      m.fiscal_year,
+                      m.fiscal_quarter
+                  ) IN (
+                      SELECT
+                          symbol,
+                          fiscal_year,
+                          fiscal_quarter
+                      FROM (
+                          SELECT
+                              symbol,
+                              MAX(fiscal_year) AS fiscal_year
+                          FROM stockmate.stock_financial_metrics
+                          WHERE source = 'CAFEF'
+                          GROUP BY symbol
+                      ) y
+                      INNER JOIN (
+                          SELECT
+                              symbol,
+                              fiscal_year,
+                              MAX(fiscal_quarter) AS fiscal_quarter
+                          FROM stockmate.stock_financial_metrics
+                          WHERE source = 'CAFEF'
+                          GROUP BY symbol, fiscal_year
+                      ) q
+                        ON q.symbol = y.symbol
+                       AND q.fiscal_year = y.fiscal_year
+                  )
+            """).bindparams(
+                bindparam("symbols", expanding=True),
+                bindparam("codes", expanding=True),
+            ),
+            {
+                "symbols": symbols,
+                "codes": codes,
+            },
+        ).mappings().all()
+
+        metrics_map = {}
+
+        for row in metric_rows:
+            metrics_map.setdefault(row["symbol"], {})[
+                row["metric_code"]
+            ] = (
+                float(row["metric_value"])
+                if row["metric_value"] is not None
+                else None
+            )
+
+        # 7. Trả dữ liệu
+        items = []
+
+        for stock in stocks:
+            metric_values = metrics_map.get(
+                stock["symbol"],
+                {},
+            )
+
+            items.append({
+                "symbol": stock["symbol"],
+                "year": stock["fiscal_year"],
+                "quarter": stock["fiscal_quarter"],
+                "metrics": [
+                    {
+                        "code": code,
+                        "name": definition_map[code]["name"],
+                        "unit": definition_map[code]["unit"],
+                        "value": metric_values.get(code),
+                    }
+                    for code in codes
+                ],
+            })
 
         return {
-            "symbol": symbol,
-            "count": value.get("count", 0),
-            "unit": value.get("unit"),
-            "listType": value.get("listType", []),
-            "templace": value.get("templace", []),
-            "data": value.get("data", []),
+            "total": total,
+            "pageIndex": request.pageIndex,
+            "pageSize": request.pageSize,
+            "items": items,
         }
 
-    except requests.RequestException as e:
-        return {
-            "symbol": symbol,
-            "data": [],
-            "error": str(e),
-        }
+    except HTTPException:
+        raise
 
-    except ValueError as e:
-        return {
-            "symbol": symbol,
-            "data": [],
-            "error": f"Không thể đọc JSON từ CafeF: {e}",
-        }
+    except Exception:
+        logger.exception("Lỗi lọc cổ phiếu theo chỉ tiêu tài chính")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Không thể lọc cổ phiếu",
+        )
+
+
+
 
 @router.get("/api/stocks/{symbol}/list_ceo")
 def get_List_Ceo(symbol: str):
