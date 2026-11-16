@@ -1422,23 +1422,22 @@ def search_stocks_by_financial_metrics(
 
         # 3. Xác định kỳ báo cáo mới nhất của từng cổ phiếu
         latest_period_cte = """
-            WITH latest_year AS (
-                SELECT
-                    symbol,
-                    MAX(fiscal_year) AS fiscal_year
-                FROM stockmate.stock_financial_metrics
-                WHERE source = 'CAFEF'
-                GROUP BY symbol
-            ),
-            latest_period AS (
+            (
                 SELECT
                     m.symbol,
                     m.fiscal_year,
                     MAX(m.fiscal_quarter) AS fiscal_quarter
                 FROM stockmate.stock_financial_metrics m
-                INNER JOIN latest_year y
+                INNER JOIN (
+                    SELECT
+                        symbol,
+                        MAX(fiscal_year) AS fiscal_year
+                    FROM stockmate.stock_financial_metrics
+                    WHERE source = 'CAFEF'
+                    GROUP BY symbol
+                ) y
                     ON y.symbol = m.symbol
-                   AND y.fiscal_year = m.fiscal_year
+                AND y.fiscal_year = m.fiscal_year
                 WHERE m.source = 'CAFEF'
                 GROUP BY m.symbol, m.fiscal_year
             )
@@ -1446,14 +1445,13 @@ def search_stocks_by_financial_metrics(
 
         # 4. Đếm tổng số cổ phiếu phù hợp
         count_sql = text(f"""
-            {latest_period_cte}
             SELECT COUNT(*)
             FROM stockmate.stocks s
-            INNER JOIN latest_period lp
+            INNER JOIN {latest_period_cte} lp
                 ON lp.symbol = s.symbol
             WHERE s.symbol IS NOT NULL
-              AND TRIM(s.symbol) <> ''
-              AND {where_conditions}
+            AND TRIM(s.symbol) <> ''
+            AND {where_conditions}
         """)
 
         total = db.execute(
@@ -1470,17 +1468,16 @@ def search_stocks_by_financial_metrics(
 
         stocks = db.execute(
             text(f"""
-                {latest_period_cte}
                 SELECT
                     s.symbol,
                     lp.fiscal_year,
                     lp.fiscal_quarter
                 FROM stockmate.stocks s
-                INNER JOIN latest_period lp
+                INNER JOIN {latest_period_cte} lp
                     ON lp.symbol = s.symbol
                 WHERE s.symbol IS NOT NULL
-                  AND TRIM(s.symbol) <> ''
-                  AND {where_conditions}
+                AND TRIM(s.symbol) <> ''
+                AND {where_conditions}
                 ORDER BY s.symbol
                 LIMIT :limit OFFSET :offset
             """),
@@ -1499,44 +1496,19 @@ def search_stocks_by_financial_metrics(
         symbols = [row["symbol"] for row in stocks]
 
         metric_rows = db.execute(
-            text("""
+            text(f"""
                 SELECT
                     m.symbol,
                     m.metric_code,
                     m.metric_value
                 FROM stockmate.stock_financial_metrics m
+                INNER JOIN {latest_period_cte} lp
+                    ON lp.symbol = m.symbol
+                AND lp.fiscal_year = m.fiscal_year
+                AND lp.fiscal_quarter = m.fiscal_quarter
                 WHERE m.source = 'CAFEF'
-                  AND m.symbol IN :symbols
-                  AND m.metric_code IN :codes
-                  AND (
-                      m.symbol,
-                      m.fiscal_year,
-                      m.fiscal_quarter
-                  ) IN (
-                      SELECT
-                          symbol,
-                          fiscal_year,
-                          fiscal_quarter
-                      FROM (
-                          SELECT
-                              symbol,
-                              MAX(fiscal_year) AS fiscal_year
-                          FROM stockmate.stock_financial_metrics
-                          WHERE source = 'CAFEF'
-                          GROUP BY symbol
-                      ) y
-                      INNER JOIN (
-                          SELECT
-                              symbol,
-                              fiscal_year,
-                              MAX(fiscal_quarter) AS fiscal_quarter
-                          FROM stockmate.stock_financial_metrics
-                          WHERE source = 'CAFEF'
-                          GROUP BY symbol, fiscal_year
-                      ) q
-                        ON q.symbol = y.symbol
-                       AND q.fiscal_year = y.fiscal_year
-                  )
+                AND m.symbol IN :symbols
+                AND m.metric_code IN :codes
             """).bindparams(
                 bindparam("symbols", expanding=True),
                 bindparam("codes", expanding=True),
