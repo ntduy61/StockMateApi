@@ -22,5 +22,5 @@ api_router.include_router(push.router)
 api_router.include_router(news.router)
 api_router.include_router(store.router)
 api_router.include_router(portfolio.router,
-    prefix="/portfolio",
+    prefix="/api/portfolio",
     tags=["Portfolio"])
