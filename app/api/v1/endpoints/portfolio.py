@@ -1,8 +1,8 @@
 
-from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from datetime import datetime, date
+from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -18,69 +18,99 @@ router = APIRouter()
 # HELPERS
 # =========================================================
 
-def to_decimal(value, field_name, default=None):
+ZERO = Decimal("0")
+
+
+def to_decimal(value, default=ZERO):
     if value is None:
-        if default is not None:
-            return Decimal(str(default))
-        raise HTTPException(
-            status_code=400,
-            detail=f"Thiếu trường {field_name}"
-        )
+        return default
 
     try:
-        result = Decimal(str(value))
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return default
 
-        if not result.is_finite():
-            raise InvalidOperation
 
-        return result
-
-    except (InvalidOperation, ValueError, TypeError):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Trường {field_name} không hợp lệ"
-        )
+def to_float(value):
+    if value is None:
+        return None
+    return float(value)
 
 
 def validate_positive(value, field_name):
-    if value <= 0:
+    number = to_decimal(value)
+
+    if number <= 0:
         raise HTTPException(
             status_code=400,
             detail=f"{field_name} phải lớn hơn 0"
         )
 
+    return number
+
 
 def validate_non_negative(value, field_name):
-    if value < 0:
+    number = to_decimal(value)
+
+    if number < 0:
         raise HTTPException(
             status_code=400,
             detail=f"{field_name} không được âm"
         )
+
+    return number
+
+
+def validate_transaction_type(value):
+    transaction_type = str(value or "").upper()
+
+    if transaction_type not in ("BUY", "SELL"):
+        raise HTTPException(
+            status_code=400,
+            detail="Loại giao dịch phải là BUY hoặc SELL"
+        )
+
+    return transaction_type
+
+
+def validate_symbol(value):
+    symbol = str(value or "").strip().upper()
+
+    if not symbol:
+        raise HTTPException(
+            status_code=400,
+            detail="Mã cổ phiếu không được để trống"
+        )
+
+    return symbol
 
 
 def validate_date(value):
     if not value:
         return datetime.now()
 
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+
     try:
-        if isinstance(value, datetime):
-            return value
-
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-
-    except (ValueError, TypeError):
+        return datetime.fromisoformat(str(value).replace("Z", ""))
+    except ValueError:
         raise HTTPException(
             status_code=400,
             detail="Ngày giao dịch không hợp lệ"
         )
 
 
-def money(value):
-    return value.quantize(
-        Decimal("0.01"),
-        rounding=ROUND_HALF_UP
-    )
+def row_to_dict(row):
+    return dict(row) if row else None
 
+
+# =========================================================
+# PORTFOLIO HELPERS
+# =========================================================
 
 def get_portfolio(db, portfolio_id, user_id):
     portfolio = db.execute(
@@ -89,6 +119,7 @@ def get_portfolio(db, portfolio_id, user_id):
             FROM investment_portfolios
             WHERE id = :portfolio_id
               AND user_id = :user_id
+            LIMIT 1
         """),
         {
             "portfolio_id": portfolio_id,
@@ -102,7 +133,7 @@ def get_portfolio(db, portfolio_id, user_id):
             detail="Không tìm thấy danh mục đầu tư"
         )
 
-    return portfolio
+    return dict(portfolio)
 
 
 def get_fee_settings(db, portfolio_id):
@@ -111,19 +142,21 @@ def get_fee_settings(db, portfolio_id):
             SELECT *
             FROM investment_fee_settings
             WHERE portfolio_id = :portfolio_id
+            LIMIT 1
         """),
         {"portfolio_id": portfolio_id}
     ).mappings().first()
 
     if not settings:
         return {
-            "buy_fee_rate": Decimal("0"),
-            "sell_fee_rate": Decimal("0"),
-            "sell_tax_rate": Decimal("0"),
-            "custody_fee": Decimal("0")
+            "portfolio_id": portfolio_id,
+            "buy_fee_rate": 0,
+            "sell_fee_rate": 0,
+            "sell_tax_rate": 0,
+            "custody_fee": 0
         }
 
-    return settings
+    return dict(settings)
 
 
 def calculate_fee_tax(
@@ -136,56 +169,69 @@ def calculate_fee_tax(
 ):
     transaction_value = quantity * price
 
-    if transaction_type == "BUY":
+    if fee is not None:
+        calculated_fee = validate_non_negative(fee, "Phí giao dịch")
+    elif transaction_type == "BUY":
         calculated_fee = (
             transaction_value
-            * Decimal(str(settings["buy_fee_rate"]))
+            * to_decimal(settings.get("buy_fee_rate"))
             / Decimal("100")
         )
-        calculated_tax = Decimal("0")
-
     else:
         calculated_fee = (
             transaction_value
-            * Decimal(str(settings["sell_fee_rate"]))
+            * to_decimal(settings.get("sell_fee_rate"))
             / Decimal("100")
         )
+
+    if tax is not None:
+        calculated_tax = validate_non_negative(tax, "Thuế")
+    elif transaction_type == "SELL":
         calculated_tax = (
             transaction_value
-            * Decimal(str(settings["sell_tax_rate"]))
+            * to_decimal(settings.get("sell_tax_rate"))
             / Decimal("100")
         )
+    else:
+        calculated_tax = ZERO
 
-    actual_fee = (
-        money(to_decimal(fee, "fee"))
-        if fee is not None
-        else money(calculated_fee)
-    )
+    return calculated_fee, calculated_tax
 
-    actual_tax = (
-        money(to_decimal(tax, "tax"))
-        if tax is not None
-        else money(calculated_tax)
-    )
 
-    validate_non_negative(actual_fee, "Phí giao dịch")
-    validate_non_negative(actual_tax, "Thuế")
-
-    return actual_fee, actual_tax
-
+# =========================================================
+# CALCULATE PORTFOLIO
+# =========================================================
 
 def calculate_portfolio(db, portfolio_id):
+    """
+    Tính holdings theo phương pháp giá vốn bình quân.
+
+    BUY:
+        quantity tăng
+        cost_value tăng theo giá trị mua + phí + thuế
+
+    SELL:
+        quantity giảm
+        cost_value giảm theo giá vốn bình quân
+        realized_profit được cập nhật
+
+    Sau khi tính xong:
+        JOIN stocks để lấy current_price.
+    """
+
     transactions = db.execute(
         text("""
             SELECT
                 id,
+                portfolio_id,
                 symbol,
                 transaction_type,
                 quantity,
                 price,
                 fee,
                 tax,
-                transaction_date
+                transaction_date,
+                note
             FROM investment_transactions
             WHERE portfolio_id = :portfolio_id
             ORDER BY transaction_date ASC, id ASC
@@ -194,69 +240,125 @@ def calculate_portfolio(db, portfolio_id):
     ).mappings().all()
 
     holdings = {}
-    total_realized_profit = Decimal("0")
 
     for transaction in transactions:
         symbol = transaction["symbol"].upper()
-        transaction_type = transaction["transaction_type"]
 
-        quantity = Decimal(str(transaction["quantity"]))
-        price = Decimal(str(transaction["price"]))
-        fee = Decimal(str(transaction["fee"] or 0))
-        tax = Decimal(str(transaction["tax"] or 0))
+        transaction_type = transaction["transaction_type"].upper()
+
+        quantity = to_decimal(transaction["quantity"])
+        price = to_decimal(transaction["price"])
+        fee = to_decimal(transaction["fee"])
+        tax = to_decimal(transaction["tax"])
 
         if symbol not in holdings:
             holdings[symbol] = {
                 "symbol": symbol,
-                "quantity": Decimal("0"),
-                "cost_value": Decimal("0"),
-                "realized_profit": Decimal("0")
+                "quantity": ZERO,
+                "cost_value": ZERO,
+                "realized_profit": ZERO
             }
 
         holding = holdings[symbol]
 
+        transaction_value = quantity * price
+
         if transaction_type == "BUY":
+
+            # Giá vốn mua bao gồm phí và thuế
+            total_cost = transaction_value + fee + tax
+
             holding["quantity"] += quantity
-            holding["cost_value"] += (
-                quantity * price + fee + tax
-            )
+            holding["cost_value"] += total_cost
 
         elif transaction_type == "SELL":
-            if quantity > holding["quantity"]:
+
+            if holding["quantity"] < quantity:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"Giao dịch bán {symbol} không hợp lệ: "
-                        "số lượng bán vượt quá số lượng đang nắm giữ"
+                        f"Giao dịch bán {symbol} tại ngày "
+                        f"{transaction['transaction_date']} "
+                        "vượt quá số lượng cổ phiếu đang nắm giữ"
                     )
                 )
 
-            if holding["quantity"] <= 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Không có cổ phiếu {symbol} để bán"
-                )
-
+            # Giá vốn bình quân tại thời điểm bán
             average_cost = (
                 holding["cost_value"] / holding["quantity"]
+                if holding["quantity"] > 0
+                else ZERO
             )
 
-            sell_value = quantity * price - fee - tax
-            cost_of_sold = quantity * average_cost
+            sold_cost = average_cost * quantity
 
-            realized_profit = sell_value - cost_of_sold
+            # Tiền thu về sau khi trừ phí và thuế
+            net_proceeds = transaction_value - fee - tax
+
+            holding["realized_profit"] += (
+                net_proceeds - sold_cost
+            )
 
             holding["quantity"] -= quantity
-            holding["cost_value"] -= cost_of_sold
-            holding["realized_profit"] += realized_profit
+            holding["cost_value"] -= sold_cost
 
-            total_realized_profit += realized_profit
+            if holding["quantity"] == 0:
+                holding["cost_value"] = ZERO
+
+    # Chỉ giữ các mã còn số lượng
+    holdings = {
+        symbol: holding
+        for symbol, holding in holdings.items()
+        if holding["quantity"] > 0
+    }
+
+    symbols = list(holdings.keys())
+
+    # =====================================================
+    # JOIN STOCKS: LẤY GIÁ HIỆN TẠI
+    # =====================================================
+
+    current_prices = {}
+
+    if symbols:
+        price_rows = db.execute(
+            text("""
+                SELECT
+                    h.symbol,
+                    s.current_price
+                FROM (
+                    SELECT DISTINCT symbol
+                    FROM investment_transactions
+                    WHERE portfolio_id = :portfolio_id
+                ) h
+                LEFT JOIN stocks s
+                    ON s.symbol = h.symbol
+            """),
+            {"portfolio_id": portfolio_id}
+        ).mappings().all()
+
+        current_prices = {
+            row["symbol"]: to_decimal(row["current_price"])
+            if row["current_price"] is not None
+            else None
+            for row in price_rows
+        }
+
+    # =====================================================
+    # CALCULATE MARKET VALUE AND PROFIT
+    # =====================================================
 
     result = []
 
-    for holding in holdings.values():
-        if holding["quantity"] <= 0:
-            continue
+    total_quantity = ZERO
+    total_cost = ZERO
+    total_market_value = ZERO
+    total_unrealized_profit = ZERO
+    total_realized_profit = ZERO
+
+    has_missing_price = False
+
+    for symbol, holding in holdings.items():
 
         quantity = holding["quantity"]
         cost_value = holding["cost_value"]
@@ -264,52 +366,88 @@ def calculate_portfolio(db, portfolio_id):
         average_cost = (
             cost_value / quantity
             if quantity > 0
-            else Decimal("0")
+            else ZERO
         )
 
+        current_price = current_prices.get(symbol)
+
+        if current_price is not None:
+            market_value = quantity * current_price
+            unrealized_profit = market_value - cost_value
+
+            unrealized_profit_percent = (
+                unrealized_profit / cost_value * Decimal("100")
+                if cost_value > 0
+                else ZERO
+            )
+
+            total_market_value += market_value
+            total_unrealized_profit += unrealized_profit
+
+        else:
+            market_value = None
+            unrealized_profit = None
+            unrealized_profit_percent = None
+            has_missing_price = True
+
+        total_quantity += quantity
+        total_cost += cost_value
+        total_realized_profit += holding["realized_profit"]
+
         result.append({
-            "symbol": holding["symbol"],
-            "quantity": float(quantity),
-            "average_cost": float(money(average_cost)),
-            "cost_value": float(money(cost_value)),
-            "current_price": None,
-            "market_value": None,
-            "unrealized_profit": None,
-            "realized_profit": float(money(
+            "symbol": symbol,
+            "quantity": to_float(quantity),
+            "average_cost": to_float(average_cost),
+            "cost_value": to_float(cost_value),
+            "current_price": to_float(current_price),
+            "market_value": to_float(market_value),
+            "unrealized_profit": to_float(unrealized_profit),
+            "unrealized_profit_percent": to_float(
+                unrealized_profit_percent
+            ),
+            "realized_profit": to_float(
                 holding["realized_profit"]
-            ))
+            )
         })
+
+    total_market_value_result = (
+        None if has_missing_price else to_float(total_market_value)
+    )
+
+    total_unrealized_result = (
+        None if has_missing_price else to_float(total_unrealized_profit)
+    )
 
     return {
         "holdings": result,
-        "total_realized_profit": money(total_realized_profit)
+        "summary": {
+            "total_symbols": len(result),
+            "total_quantity": to_float(total_quantity),
+            "total_cost": to_float(total_cost),
+            "total_market_value": total_market_value_result,
+            "total_unrealized_profit": total_unrealized_result,
+            "total_realized_profit": to_float(total_realized_profit)
+        }
     }
 
 
-def validate_transaction_history(db, portfolio_id):
-    # Kiểm tra toàn bộ lịch sử giao dịch sau khi thêm/sửa/xóa.
-    calculate_portfolio(db, portfolio_id)
-
-
 # =========================================================
-# PORTFOLIOS
+# PORTFOLIO CRUD
 # =========================================================
 
-@router.post("")
+@router.post("/")
 def create_portfolio(
     data: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    name = str(data.get("name", "")).strip()
+    name = str(data.get("name") or "").strip()
 
     if not name:
         raise HTTPException(
             status_code=400,
             detail="Tên danh mục không được để trống"
         )
-
-    description = data.get("description")
 
     result = db.execute(
         text("""
@@ -331,7 +469,7 @@ def create_portfolio(
         {
             "user_id": current_user.id,
             "name": name,
-            "description": description
+            "description": data.get("description")
         }
     )
 
@@ -366,12 +504,12 @@ def create_portfolio(
     }
 
 
-@router.get("")
+@router.get("/")
 def get_portfolios(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    portfolios = db.execute(
+    rows = db.execute(
         text("""
             SELECT
                 p.*,
@@ -382,14 +520,14 @@ def get_portfolios(
                 ) AS transaction_count
             FROM investment_portfolios p
             WHERE p.user_id = :user_id
-            ORDER BY p.created_at DESC
+            ORDER BY p.id DESC
         """),
         {"user_id": current_user.id}
     ).mappings().all()
 
     return {
         "success": True,
-        "data": [dict(item) for item in portfolios]
+        "data": [dict(row) for row in rows]
     }
 
 
@@ -402,35 +540,27 @@ def update_portfolio(
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
-    name = data.get("name")
-    description = data.get("description")
+    name = str(data.get("name") or "").strip()
 
-    if name is not None:
-        name = str(name).strip()
-
-        if not name:
-            raise HTTPException(
-                status_code=400,
-                detail="Tên danh mục không được để trống"
-            )
+    if not name:
+        raise HTTPException(
+            status_code=400,
+            detail="Tên danh mục không được để trống"
+        )
 
     db.execute(
         text("""
             UPDATE investment_portfolios
             SET
-                name = COALESCE(:name, name),
-                description = CASE
-                    WHEN :has_description = 1 THEN :description
-                    ELSE description
-                END,
+                name = :name,
+                description = :description,
                 updated_at = NOW()
             WHERE id = :portfolio_id
         """),
         {
             "portfolio_id": portfolio_id,
             "name": name,
-            "description": description,
-            "has_description": 1 if "description" in data else 0
+            "description": data.get("description")
         }
     )
 
@@ -476,36 +606,25 @@ def get_portfolio_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    portfolio = get_portfolio(db, portfolio_id, current_user.id)
-
-    result = calculate_portfolio(db, portfolio_id)
-
-    total_cost = sum(
-        Decimal(str(item["cost_value"]))
-        for item in result["holdings"]
+    portfolio = get_portfolio(
+        db,
+        portfolio_id,
+        current_user.id
     )
+
+    calculated = calculate_portfolio(db, portfolio_id)
 
     return {
         "success": True,
         "data": {
-            "portfolio": dict(portfolio),
-            "total_symbols": len(result["holdings"]),
-            "total_quantity": sum(
-                item["quantity"]
-                for item in result["holdings"]
-            ),
-            "total_cost": float(money(total_cost)),
-            "total_market_value": None,
-            "total_unrealized_profit": None,
-            "total_realized_profit": float(
-                result["total_realized_profit"]
-            )
+            "portfolio": portfolio,
+            **calculated["summary"]
         }
     }
 
 
 # =========================================================
-# HOLDINGS
+# PORTFOLIO HOLDINGS
 # =========================================================
 
 @router.get("/{portfolio_id}/holdings")
@@ -516,11 +635,11 @@ def get_portfolio_holdings(
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
-    result = calculate_portfolio(db, portfolio_id)
+    calculated = calculate_portfolio(db, portfolio_id)
 
     return {
         "success": True,
-        "data": result["holdings"]
+        "data": calculated["holdings"]
     }
 
 
@@ -537,28 +656,21 @@ def create_transaction(
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
-    symbol = str(data.get("symbol", "")).strip().upper()
-    transaction_type = str(
-        data.get("transaction_type", "")
-    ).strip().upper()
+    symbol = validate_symbol(data.get("symbol"))
 
-    if not symbol:
-        raise HTTPException(
-            status_code=400,
-            detail="Mã cổ phiếu không được để trống"
-        )
+    transaction_type = validate_transaction_type(
+        data.get("transaction_type")
+    )
 
-    if transaction_type not in ("BUY", "SELL"):
-        raise HTTPException(
-            status_code=400,
-            detail="Loại giao dịch chỉ được là BUY hoặc SELL"
-        )
+    quantity = validate_positive(
+        data.get("quantity"),
+        "Số lượng"
+    )
 
-    quantity = to_decimal(data.get("quantity"), "quantity")
-    price = to_decimal(data.get("price"), "price")
-
-    validate_positive(quantity, "Số lượng")
-    validate_positive(price, "Giá")
+    price = validate_positive(
+        data.get("price"),
+        "Giá giao dịch"
+    )
 
     settings = get_fee_settings(db, portfolio_id)
 
@@ -575,62 +687,69 @@ def create_transaction(
         data.get("transaction_date")
     )
 
-    result = db.execute(
-        text("""
-            INSERT INTO investment_transactions (
-                portfolio_id,
-                symbol,
-                transaction_type,
-                quantity,
-                price,
-                fee,
-                tax,
-                transaction_date,
-                note,
-                created_at,
-                updated_at
-            )
-            VALUES (
-                :portfolio_id,
-                :symbol,
-                :transaction_type,
-                :quantity,
-                :price,
-                :fee,
-                :tax,
-                :transaction_date,
-                :note,
-                NOW(),
-                NOW()
-            )
-        """),
-        {
-            "portfolio_id": portfolio_id,
-            "symbol": symbol,
-            "transaction_type": transaction_type,
-            "quantity": quantity,
-            "price": price,
-            "fee": fee,
-            "tax": tax,
-            "transaction_date": transaction_date,
-            "note": data.get("note")
-        }
-    )
-
     try:
-        validate_transaction_history(db, portfolio_id)
+        db.execute(
+            text("""
+                INSERT INTO investment_transactions (
+                    portfolio_id,
+                    symbol,
+                    transaction_type,
+                    quantity,
+                    price,
+                    fee,
+                    tax,
+                    transaction_date,
+                    note,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    :portfolio_id,
+                    :symbol,
+                    :transaction_type,
+                    :quantity,
+                    :price,
+                    :fee,
+                    :tax,
+                    :transaction_date,
+                    :note,
+                    NOW(),
+                    NOW()
+                )
+            """),
+            {
+                "portfolio_id": portfolio_id,
+                "symbol": symbol,
+                "transaction_type": transaction_type,
+                "quantity": quantity,
+                "price": price,
+                "fee": fee,
+                "tax": tax,
+                "transaction_date": transaction_date,
+                "note": data.get("note")
+            }
+        )
+
+        # Kiểm tra lại lịch sử giao dịch.
+        # Nếu bán vượt số lượng đang có thì rollback.
+        calculate_portfolio(db, portfolio_id)
+
         db.commit()
 
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        raise
+
+        if isinstance(exc, HTTPException):
+            raise exc
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không thể tạo giao dịch: {str(exc)}"
+        )
 
     return {
         "success": True,
-        "message": "Thêm giao dịch thành công",
-        "id": result.lastrowid,
-        "fee": float(fee),
-        "tax": float(tax)
+        "message": "Thêm giao dịch thành công"
     }
 
 
@@ -638,7 +757,7 @@ def create_transaction(
 def get_transactions(
     portfolio_id: int,
     symbol: str = Query(None),
-    transaction_type: str = Query(None),
+    transaction_type: str = Query(None, alias="type"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -646,43 +765,41 @@ def get_transactions(
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
+    conditions = ["portfolio_id = :portfolio_id"]
+
+    params = {
+        "portfolio_id": portfolio_id,
+        "limit": limit,
+        "offset": offset
+    }
+
+    if symbol:
+        conditions.append("symbol = :symbol")
+        params["symbol"] = symbol.strip().upper()
+
     if transaction_type:
-        transaction_type = transaction_type.upper()
+        transaction_type = validate_transaction_type(
+            transaction_type
+        )
+        conditions.append("transaction_type = :transaction_type")
+        params["transaction_type"] = transaction_type
 
-        if transaction_type not in ("BUY", "SELL"):
-            raise HTTPException(
-                status_code=400,
-                detail="Loại giao dịch không hợp lệ"
-            )
+    where_clause = " AND ".join(conditions)
 
-    transactions = db.execute(
-        text("""
+    rows = db.execute(
+        text(f"""
             SELECT *
             FROM investment_transactions
-            WHERE portfolio_id = :portfolio_id
-              AND (
-                  :symbol IS NULL
-                  OR symbol = :symbol
-              )
-              AND (
-                  :transaction_type IS NULL
-                  OR transaction_type = :transaction_type
-              )
+            WHERE {where_clause}
             ORDER BY transaction_date DESC, id DESC
             LIMIT :limit OFFSET :offset
         """),
-        {
-            "portfolio_id": portfolio_id,
-            "symbol": symbol.upper() if symbol else None,
-            "transaction_type": transaction_type,
-            "limit": limit,
-            "offset": offset
-        }
+        params
     ).mappings().all()
 
     return {
         "success": True,
-        "data": [dict(item) for item in transactions]
+        "data": [dict(row) for row in rows]
     }
 
 
@@ -696,12 +813,13 @@ def update_transaction(
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
-    transaction = db.execute(
+    old = db.execute(
         text("""
             SELECT *
             FROM investment_transactions
             WHERE id = :transaction_id
               AND portfolio_id = :portfolio_id
+            LIMIT 1
         """),
         {
             "transaction_id": transaction_id,
@@ -709,47 +827,29 @@ def update_transaction(
         }
     ).mappings().first()
 
-    if not transaction:
+    if not old:
         raise HTTPException(
             status_code=404,
             detail="Không tìm thấy giao dịch"
         )
 
-    symbol = str(
-        data.get("symbol", transaction["symbol"])
-    ).strip().upper()
-
-    transaction_type = str(
-        data.get(
-            "transaction_type",
-            transaction["transaction_type"]
-        )
-    ).strip().upper()
-
-    if not symbol:
-        raise HTTPException(
-            status_code=400,
-            detail="Mã cổ phiếu không được để trống"
-        )
-
-    if transaction_type not in ("BUY", "SELL"):
-        raise HTTPException(
-            status_code=400,
-            detail="Loại giao dịch không hợp lệ"
-        )
-
-    quantity = to_decimal(
-        data.get("quantity", transaction["quantity"]),
-        "quantity"
+    symbol = validate_symbol(
+        data.get("symbol", old["symbol"])
     )
 
-    price = to_decimal(
-        data.get("price", transaction["price"]),
-        "price"
+    transaction_type = validate_transaction_type(
+        data.get("transaction_type", old["transaction_type"])
     )
 
-    validate_positive(quantity, "Số lượng")
-    validate_positive(price, "Giá")
+    quantity = validate_positive(
+        data.get("quantity", old["quantity"]),
+        "Số lượng"
+    )
+
+    price = validate_positive(
+        data.get("price", old["price"]),
+        "Giá giao dịch"
+    )
 
     settings = get_fee_settings(db, portfolio_id)
 
@@ -758,62 +858,63 @@ def update_transaction(
         quantity,
         price,
         settings,
-        data.get("fee"),
-        data.get("tax")
+        data.get("fee", old["fee"]),
+        data.get("tax", old["tax"])
     )
 
     transaction_date = validate_date(
-        data.get(
-            "transaction_date",
-            transaction["transaction_date"]
-        )
-    )
-
-    note = data.get("note", transaction["note"])
-
-    db.execute(
-        text("""
-            UPDATE investment_transactions
-            SET
-                symbol = :symbol,
-                transaction_type = :transaction_type,
-                quantity = :quantity,
-                price = :price,
-                fee = :fee,
-                tax = :tax,
-                transaction_date = :transaction_date,
-                note = :note,
-                updated_at = NOW()
-            WHERE id = :transaction_id
-              AND portfolio_id = :portfolio_id
-        """),
-        {
-            "transaction_id": transaction_id,
-            "portfolio_id": portfolio_id,
-            "symbol": symbol,
-            "transaction_type": transaction_type,
-            "quantity": quantity,
-            "price": price,
-            "fee": fee,
-            "tax": tax,
-            "transaction_date": transaction_date,
-            "note": note
-        }
+        data.get("transaction_date", old["transaction_date"])
     )
 
     try:
-        validate_transaction_history(db, portfolio_id)
+        db.execute(
+            text("""
+                UPDATE investment_transactions
+                SET
+                    symbol = :symbol,
+                    transaction_type = :transaction_type,
+                    quantity = :quantity,
+                    price = :price,
+                    fee = :fee,
+                    tax = :tax,
+                    transaction_date = :transaction_date,
+                    note = :note,
+                    updated_at = NOW()
+                WHERE id = :transaction_id
+                  AND portfolio_id = :portfolio_id
+            """),
+            {
+                "transaction_id": transaction_id,
+                "portfolio_id": portfolio_id,
+                "symbol": symbol,
+                "transaction_type": transaction_type,
+                "quantity": quantity,
+                "price": price,
+                "fee": fee,
+                "tax": tax,
+                "transaction_date": transaction_date,
+                "note": data.get("note", old["note"])
+            }
+        )
+
+        calculate_portfolio(db, portfolio_id)
+
         db.commit()
 
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        raise
+
+        if isinstance(exc, HTTPException):
+            raise exc
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không thể cập nhật giao dịch: {str(exc)}"
+        )
 
     return {
         "success": True,
-        "message": "Cập nhật giao dịch thành công",
-        "fee": float(fee),
-        "tax": float(tax)
+        "message": "Cập nhật giao dịch thành công"
     }
 
 
@@ -832,12 +933,13 @@ def delete_transaction(
             FROM investment_transactions
             WHERE id = :transaction_id
               AND portfolio_id = :portfolio_id
+            LIMIT 1
         """),
         {
             "transaction_id": transaction_id,
             "portfolio_id": portfolio_id
         }
-    ).mappings().first()
+    ).first()
 
     if not transaction:
         raise HTTPException(
@@ -845,25 +947,33 @@ def delete_transaction(
             detail="Không tìm thấy giao dịch"
         )
 
-    db.execute(
-        text("""
-            DELETE FROM investment_transactions
-            WHERE id = :transaction_id
-              AND portfolio_id = :portfolio_id
-        """),
-        {
-            "transaction_id": transaction_id,
-            "portfolio_id": portfolio_id
-        }
-    )
-
     try:
-        validate_transaction_history(db, portfolio_id)
+        db.execute(
+            text("""
+                DELETE FROM investment_transactions
+                WHERE id = :transaction_id
+                  AND portfolio_id = :portfolio_id
+            """),
+            {
+                "transaction_id": transaction_id,
+                "portfolio_id": portfolio_id
+            }
+        )
+
+        calculate_portfolio(db, portfolio_id)
+
         db.commit()
 
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        raise
+
+        if isinstance(exc, HTTPException):
+            raise exc
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Không thể xóa giao dịch: {str(exc)}"
+        )
 
     return {
         "success": True,
@@ -887,7 +997,7 @@ def get_portfolio_fee_settings(
 
     return {
         "success": True,
-        "data": dict(settings)
+        "data": settings
     }
 
 
@@ -900,32 +1010,27 @@ def update_portfolio_fee_settings(
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
-    current = get_fee_settings(db, portfolio_id)
+    old = get_fee_settings(db, portfolio_id)
 
-    buy_fee_rate = to_decimal(
-        data.get("buy_fee_rate", current["buy_fee_rate"]),
-        "buy_fee_rate"
+    buy_fee_rate = validate_non_negative(
+        data.get("buy_fee_rate", old["buy_fee_rate"]),
+        "Phí mua"
     )
 
-    sell_fee_rate = to_decimal(
-        data.get("sell_fee_rate", current["sell_fee_rate"]),
-        "sell_fee_rate"
+    sell_fee_rate = validate_non_negative(
+        data.get("sell_fee_rate", old["sell_fee_rate"]),
+        "Phí bán"
     )
 
-    sell_tax_rate = to_decimal(
-        data.get("sell_tax_rate", current["sell_tax_rate"]),
-        "sell_tax_rate"
+    sell_tax_rate = validate_non_negative(
+        data.get("sell_tax_rate", old["sell_tax_rate"]),
+        "Thuế bán"
     )
 
-    custody_fee = to_decimal(
-        data.get("custody_fee", current["custody_fee"]),
-        "custody_fee"
+    custody_fee = validate_non_negative(
+        data.get("custody_fee", old["custody_fee"]),
+        "Phí lưu ký"
     )
-
-    validate_non_negative(buy_fee_rate, "Phí mua")
-    validate_non_negative(sell_fee_rate, "Phí bán")
-    validate_non_negative(sell_tax_rate, "Thuế bán")
-    validate_non_negative(custody_fee, "Phí lưu ký")
 
     db.execute(
         text("""
@@ -963,11 +1068,5 @@ def update_portfolio_fee_settings(
 
     return {
         "success": True,
-        "message": "Cập nhật phí giao dịch thành công",
-        "data": {
-            "buy_fee_rate": float(buy_fee_rate),
-            "sell_fee_rate": float(sell_fee_rate),
-            "sell_tax_rate": float(sell_tax_rate),
-            "custody_fee": float(custody_fee)
-        }
+        "message": "Cập nhật phí giao dịch thành công"
     }
