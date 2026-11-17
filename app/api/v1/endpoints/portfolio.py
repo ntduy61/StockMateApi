@@ -1,5 +1,5 @@
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
@@ -758,48 +758,199 @@ def get_transactions(
     portfolio_id: int,
     symbol: str = Query(None),
     transaction_type: str = Query(None, alias="type"),
-    limit: int = Query(100, ge=1, le=500),
+    from_date: date = Query(None),
+    to_date: date = Query(None),
+    limit: int = Query(10, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     get_portfolio(db, portfolio_id, current_user.id)
 
-    conditions = ["portfolio_id = :portfolio_id"]
+    # Kiểm tra bộ lọc
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Ngày bắt đầu không được lớn hơn ngày kết thúc"
+        )
 
-    params = {
-        "portfolio_id": portfolio_id,
-        "limit": limit,
-        "offset": offset
-    }
+    normalized_symbol = (
+        symbol.strip().upper()
+        if symbol and symbol.strip()
+        else None
+    )
 
-    if symbol:
-        conditions.append("symbol = :symbol")
-        params["symbol"] = symbol.strip().upper()
+    normalized_type = None
 
     if transaction_type:
-        transaction_type = validate_transaction_type(
-            transaction_type
-        )
-        conditions.append("transaction_type = :transaction_type")
-        params["transaction_type"] = transaction_type
+        normalized_type = validate_transaction_type(transaction_type)
 
-    where_clause = " AND ".join(conditions)
+    # =====================================================
+    # 1. LẤY TOÀN BỘ LỊCH SỬ ĐỂ TÍNH GIÁ VỐN
+    # =====================================================
 
-    rows = db.execute(
-        text(f"""
+    transactions = db.execute(
+        text("""
             SELECT *
             FROM investment_transactions
-            WHERE {where_clause}
-            ORDER BY transaction_date DESC, id DESC
-            LIMIT :limit OFFSET :offset
+            WHERE portfolio_id = :portfolio_id
+            ORDER BY transaction_date ASC, id ASC
         """),
-        params
+        {"portfolio_id": portfolio_id}
     ).mappings().all()
+
+    holdings = {}
+    calculated_transactions = []
+
+    for transaction in transactions:
+        item = dict(transaction)
+
+        transaction_symbol = item["symbol"].upper()
+        transaction_type_value = item["transaction_type"].upper()
+
+        quantity = to_decimal(item["quantity"])
+        price = to_decimal(item["price"])
+        fee = to_decimal(item["fee"])
+        tax = to_decimal(item["tax"])
+
+        if transaction_symbol not in holdings:
+            holdings[transaction_symbol] = {
+                "quantity": ZERO,
+                "cost_value": ZERO
+            }
+
+        holding = holdings[transaction_symbol]
+
+        transaction_value = quantity * price
+        realized_profit = ZERO
+
+        if transaction_type_value == "BUY":
+
+            # Giá vốn mua bao gồm phí và thuế
+            total_cost = transaction_value + fee + tax
+
+            holding["quantity"] += quantity
+            holding["cost_value"] += total_cost
+
+        elif transaction_type_value == "SELL":
+
+            if holding["quantity"] < quantity:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Giao dịch bán {transaction_symbol} tại ngày "
+                        f"{item['transaction_date']} "
+                        "vượt quá số lượng cổ phiếu đang nắm giữ"
+                    )
+                )
+
+            # Giá vốn bình quân trước thời điểm bán
+            average_cost = (
+                holding["cost_value"] / holding["quantity"]
+                if holding["quantity"] > 0
+                else ZERO
+            )
+
+            sold_cost = average_cost * quantity
+
+            # Tiền bán sau khi trừ phí và thuế
+            net_proceeds = transaction_value - fee - tax
+
+            realized_profit = net_proceeds - sold_cost
+
+            holding["quantity"] -= quantity
+            holding["cost_value"] -= sold_cost
+
+            if holding["quantity"] == 0:
+                holding["cost_value"] = ZERO
+
+        # Lưu lời/lỗ của riêng giao dịch này
+        item["realized_profit"] = to_float(realized_profit)
+
+        calculated_transactions.append(item)
+
+    # =====================================================
+    # 2. ÁP DỤNG BỘ LỌC SAU KHI ĐÃ TÍNH GIÁ VỐN
+    # =====================================================
+
+    filtered_transactions = []
+
+    for item in calculated_transactions:
+        transaction_date = item["transaction_date"]
+
+        # Chuẩn hóa về date để so sánh
+        if isinstance(transaction_date, datetime):
+            transaction_day = transaction_date.date()
+        elif isinstance(transaction_date, date):
+            transaction_day = transaction_date
+        else:
+            transaction_day = datetime.fromisoformat(
+                str(transaction_date)
+            ).date()
+
+        if from_date and transaction_day < from_date:
+            continue
+
+        if to_date and transaction_day > to_date:
+            continue
+
+        if normalized_symbol:
+            if item["symbol"].upper() != normalized_symbol:
+                continue
+
+        if normalized_type:
+            if item["transaction_type"].upper() != normalized_type:
+                continue
+
+        filtered_transactions.append(item)
+
+    # =====================================================
+    # 3. TÍNH THỐNG KÊ TRÊN KẾT QUẢ ĐÃ LỌC
+    # =====================================================
+
+    total_realized_profit = ZERO
+    total_fee = ZERO
+    total_tax = ZERO
+
+    for item in filtered_transactions:
+        total_realized_profit += to_decimal(
+            item["realized_profit"]
+        )
+
+        total_fee += to_decimal(item["fee"])
+        total_tax += to_decimal(item["tax"])
+
+    total = len(filtered_transactions)
+
+    # =====================================================
+    # 4. PHÂN TRANG
+    # =====================================================
+
+    # Sắp xếp mới nhất lên trước
+    filtered_transactions.sort(
+        key=lambda item: (
+            item["transaction_date"],
+            item["id"]
+        ),
+        reverse=True
+    )
+
+    paginated_transactions = filtered_transactions[
+        offset:offset + limit
+    ]
 
     return {
         "success": True,
-        "data": [dict(row) for row in rows]
+        "data": paginated_transactions,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "statistics": {
+            "realized_profit": to_float(total_realized_profit),
+            "total_fee": to_float(total_fee),
+            "total_tax": to_float(total_tax),
+            "total_transactions": total
+        }
     }
 
 
