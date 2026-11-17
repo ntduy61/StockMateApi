@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 CAFEF_BASE_URL = "https://cafef.vn"
 
+CAFEF_BASE_URL_FILE = "https://cafefnew.mediacdn.vn"
+
 def parse_cafef_datetime(value: str | None):
     if not value:
         return None
@@ -1635,7 +1637,7 @@ def get_List_Ceo(symbol: str):
                     "group_id": person.get("GroupID"),
                     "age": person.get("old"),
                     "image_url": (
-                        f"{CAFEF_BASE_URL}{image}"
+                        f"{CAFEF_BASE_URL_FILE}{image}"
                         if image.startswith("/")
                         else image or None
                     ),
@@ -1683,8 +1685,147 @@ def get_List_Ceo(symbol: str):
             "groups": [],
         }
 
+@router.get("/api/stocks/{symbol}/info_ceo")
+def get_info_ceo(
+    symbol: str,
+    ceo_code: str = Query(..., min_length=1),
+):
+    symbol = symbol.strip().upper()
+    ceo_code = ceo_code.strip()
+
+    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/pagenew/ceov2/ajaxceov2.ashx"
+
+    params = {
+        "ceocode": ceo_code,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"{CAFEF_BASE_URL}/",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not isinstance(result, dict):
+            raise ValueError("Dữ liệu CafeF không đúng định dạng.")
+
+        data = result.get("Data") or {}
+
+        if not isinstance(data, dict):
+            data = {}
+
+        return {
+            "symbol": symbol,
+            "Success": result.get("Success", False),
+            "Message": result.get("Message"),
+            "Data": data,
+        }
+
+    except requests.RequestException as e:
+        return {
+            "symbol": symbol,
+            "Success": False,
+            "Message": f"Lỗi gọi CafeF: {e}",
+            "Data": None,
+        }
+
+    except ValueError as e:
+        return {
+            "symbol": symbol,
+            "Success": False,
+            "Message": f"Không thể đọc JSON từ CafeF: {e}",
+            "Data": None,
+        }
 
 
+@router.get("/api/stocks/{symbol}/ceo_transactions")
+def get_ceo_transactions(
+    symbol: str,
+    ceo_code: str = Query(..., min_length=1),
+    typetime: int = Query(0),
+):
+    symbol = symbol.strip().upper()
+    ceo_code = ceo_code.strip()
+
+    url = (
+        f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/DataHistory/"
+        "GDCoDongByCeoCode.ashx"
+    )
+
+    params = {
+        "ceocode": ceo_code,
+        "typetime": typetime,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"{CAFEF_BASE_URL}/",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not isinstance(result, dict):
+            raise ValueError("Dữ liệu CafeF không đúng định dạng.")
+
+        data = result.get("Data") or []
+
+        if not isinstance(data, list):
+            data = []
+
+        return {
+            "symbol": symbol,
+            "ceo_code": ceo_code,
+            "typetime": typetime,
+            "Success": result.get("Success", False),
+            "Message": result.get("Message"),
+            "Total": len(data),
+            "Data": data,
+        }
+
+    except requests.RequestException as e:
+        return {
+            "symbol": symbol,
+            "ceo_code": ceo_code,
+            "typetime": typetime,
+            "Success": False,
+            "Message": f"Lỗi gọi CafeF: {e}",
+            "Total": 0,
+            "Data": [],
+        }
+
+    except ValueError as e:
+        return {
+            "symbol": symbol,
+            "ceo_code": ceo_code,
+            "typetime": typetime,
+            "Success": False,
+            "Message": f"Không thể đọc JSON từ CafeF: {e}",
+            "Total": 0,
+            "Data": [],
+        }
+
+    
+    
 @router.get("/api/StockMarket")
 def get_StockMarket():
     url = "https://msh-appdata.cafef.vn/rest-api/api/v1/StockMarket"
@@ -1786,4 +1927,156 @@ def get_StockMarketBoard(floorcode: int = 11):
             "data": [],
             "success": False,
             "error": f"Không thể đọc JSON từ CafeF: {str(e)}",
+        }
+
+
+@router.get("/api/stocks/top10")
+def get_top10_stocks(
+    center_id: str = Query("HOSE"),
+    type: str = Query("UP"),
+):
+    center_id = center_id.strip().upper()
+    type = type.strip().upper()
+
+    if center_id not in ["HOSE", "HNX", "UPCOM"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Sàn giao dịch không hợp lệ."
+        )
+
+    if type not in ["UP", "DOWN"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Loại dữ liệu không hợp lệ. Chỉ chấp nhận UP hoặc DOWN."
+        )
+
+    url = (
+        f"{CAFEF_BASE_URL}/du-lieu/Ajax/Mobile/Smart/"
+        "AjaxTop10CP.ashx"
+    )
+
+    params = {
+        "centerID": center_id,
+        "type": type,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"{CAFEF_BASE_URL}/",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not isinstance(result, dict):
+            raise ValueError("Dữ liệu CafeF không đúng định dạng.")
+
+        data = result.get("Data") or []
+
+        if not isinstance(data, list):
+            data = []
+
+        return {
+            "centerID": center_id,
+            "type": type,
+            "Success": result.get("Success", False),
+            "Message": result.get("Message"),
+            "Total": len(data),
+            "Data": data,
+        }
+
+    except requests.RequestException as e:
+        return {
+            "centerID": center_id,
+            "type": type,
+            "Success": False,
+            "Message": f"Lỗi gọi CafeF: {e}",
+            "Total": 0,
+            "Data": [],
+        }
+
+    except ValueError as e:
+        return {
+            "centerID": center_id,
+            "type": type,
+            "Success": False,
+            "Message": f"Không thể đọc JSON từ CafeF: {e}",
+            "Total": 0,
+            "Data": [],
+        }
+
+
+@router.get("/api/stocks/market_map")
+def get_market_map(
+    type: int = Query(1),
+    category: int = Query(0),
+    center_id: int = Query(1),
+):
+    url = (
+        f"{CAFEF_BASE_URL}/du-lieu/ajax/mobile/smart/"
+        "ajaxbandothitruong.ashx"
+    )
+
+    params = {
+        "type": type,
+        "category": category,
+        "centerId": center_id,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": f"{CAFEF_BASE_URL}/",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if not isinstance(result, dict):
+            raise ValueError("Dữ liệu CafeF không đúng định dạng.")
+
+        return {
+            "type": type,
+            "category": category,
+            "centerId": center_id,
+            "Success": result.get("Success", False),
+            "Message": result.get("Message"),
+            "Data": result.get("Data"),
+        }
+
+    except requests.RequestException as e:
+        return {
+            "type": type,
+            "category": category,
+            "centerId": center_id,
+            "Success": False,
+            "Message": f"Lỗi gọi CafeF: {e}",
+            "Data": None,
+        }
+
+    except ValueError as e:
+        return {
+            "type": type,
+            "category": category,
+            "centerId": center_id,
+            "Success": False,
+            "Message": f"Không thể đọc JSON từ CafeF: {e}",
+            "Data": None,
         }
