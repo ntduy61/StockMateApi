@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 CAFEF_BASE_URL = "https://cafef.vn"
 
+CAFEF_M_BASE_URL = "https://m.cafef.vn"
+
 CAFEF_BASE_URL_FILE = "https://cafefnew.mediacdn.vn"
 
 def parse_cafef_datetime(value: str | None):
@@ -1693,7 +1695,7 @@ def get_info_ceo(
     symbol = symbol.strip().upper()
     ceo_code = ceo_code.strip()
 
-    url = f"{CAFEF_BASE_URL}/du-lieu/Ajax/pagenew/ceov2/ajaxceov2.ashx"
+    url = f"{CAFEF_M_BASE_URL}/du-lieu/Ajax/pagenew/ceov2/ajaxceov2.ashx"
 
     params = {
         "ceocode": ceo_code,
@@ -1758,7 +1760,7 @@ def get_ceo_transactions(
     ceo_code = ceo_code.strip()
 
     url = (
-        f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/DataHistory/"
+        f"{CAFEF_M_BASE_URL}/du-lieu/Ajax/PageNew/DataHistory/"
         "GDCoDongByCeoCode.ashx"
     )
 
@@ -1951,7 +1953,7 @@ def get_top10_stocks(
         )
 
     url = (
-        f"{CAFEF_BASE_URL}/du-lieu/Ajax/Mobile/Smart/"
+        f"{CAFEF_M_BASE_URL}/du-lieu/Ajax/Mobile/Smart/"
         "AjaxTop10CP.ashx"
     )
 
@@ -2022,7 +2024,7 @@ def get_market_map(
     center_id: int = Query(1),
 ):
     url = (
-        f"{CAFEF_BASE_URL}/du-lieu/ajax/mobile/smart/"
+        f"{CAFEF_M_BASE_URL}/du-lieu/ajax/mobile/smart/"
         "ajaxbandothitruong.ashx"
     )
 
