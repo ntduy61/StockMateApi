@@ -1932,7 +1932,7 @@ def get_StockMarketBoard(floorcode: int = 11):
         }
 
 
-@router.get("/api/stocks/top10")
+@router.get("/api/top10stocks")
 def get_top10_stocks(
     center_id: str = Query("HOSE"),
     type: str = Query("UP"),
