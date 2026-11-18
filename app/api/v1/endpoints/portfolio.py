@@ -1135,6 +1135,42 @@ def delete_transaction(
 # =========================================================
 # FEE SETTINGS
 # =========================================================
+@router.get("/broker-fee-presets")
+def get_broker_fee_presets(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    rows = db.execute(
+        text("""
+            SELECT
+                broker_code AS id,
+                broker_name AS name,
+                package_name AS packageName,
+                buy_fee_rate,
+                sell_fee_rate,
+                sell_tax_rate,
+                custody_fee
+            FROM broker_fee_presets
+            WHERE is_active = 1
+            ORDER BY sort_order ASC, id ASC
+        """)
+    ).mappings().all()
+
+    return {
+        "success": True,
+        "data": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "packageName": row["packageName"],
+                "buy_fee_rate": float(row["buy_fee_rate"]),
+                "sell_fee_rate": float(row["sell_fee_rate"]),
+                "sell_tax_rate": float(row["sell_tax_rate"]),
+                "custody_fee": float(row["custody_fee"]),
+            }
+            for row in rows
+        ]
+    }
 
 @router.get("/{portfolio_id}/fee-settings")
 def get_portfolio_fee_settings(
