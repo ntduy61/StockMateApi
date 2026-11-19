@@ -336,6 +336,7 @@ def check_price_alerts_watchlist():
                             (
                                 user_id,
                                 symbol,
+                                notification_type,
                                 title,
                                 message,
                                 current_price,
@@ -347,6 +348,7 @@ def check_price_alerts_watchlist():
                             (
                                 :user_id,
                                 :symbol,
+                                'WATCHLIST',
                                 :title,
                                 :message,
                                 :current_price,
@@ -416,6 +418,7 @@ def check_price_alerts_watchlist():
                             message=message,
                             data={
                                 "type": "WATCHLIST_PRICE_ALERT",
+                                "notification_type": "WATCHLIST",
                                 "symbol": symbol,
                                 "notification_id": notification_id,
                             },
