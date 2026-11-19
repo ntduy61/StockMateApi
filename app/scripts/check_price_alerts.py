@@ -91,7 +91,7 @@ def check_price_alerts():
                     ON ns.user_id = pa.user_id
                 WHERE pa.is_enabled = 1
                 AND pa.is_triggered = 0
-                AND ns.price_notification = 1;
+                AND ns.news_notification = 1;
             """)
         ).mappings().all()
 

@@ -1,6 +1,3 @@
-
-# app/tasks/sync_news.py
-
 import argparse
 import hashlib
 import logging
