@@ -1055,6 +1055,64 @@ def get_stock_document_pdf(
         )
 
 
+
+
+from urllib.parse import urlparse
+@router.get("/api/stocks/{symbol}/v2/documents/pdf")
+def get_stock_v2_document_pdf(
+    symbol: str,
+    url: str = Query(...),
+):
+    try:
+        parsed = urlparse(url)
+
+        allowed_hosts = {
+            "cafef.vn",
+            "s.cafef.vn",
+        }
+
+        if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+            raise HTTPException(
+                status_code=400,
+                detail="URL tài liệu không hợp lệ",
+            )
+
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": f"{CAFEF_BASE_URL}/",
+            },
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        if "pdf" not in response.headers.get(
+            "Content-Type", ""
+        ).lower():
+            raise HTTPException(
+                status_code=502,
+                detail="CafeF không trả về file PDF",
+            )
+
+        return StreamingResponse(
+            BytesIO(response.content),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": (
+                    f'inline; filename="{symbol.upper()}_report.pdf"'
+                ),
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+
+    except requests.RequestException:
+        raise HTTPException(
+            status_code=502,
+            detail="Không thể tải tài liệu từ CafeF",
+        )
+
 @router.get("/api/stocks/{symbol}/report_sumary")
 def get_Report_Summary(
     symbol: str,
