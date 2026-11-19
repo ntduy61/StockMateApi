@@ -846,10 +846,24 @@ def sync_news(
         # chi tiết bài mới hoặc bài chưa có nội dung.
         existing_rows = db.execute(
             text("""
-                SELECT id, source_url, content
-                FROM news
-                WHERE source = 'CafeF'
-            """)
+                SELECT
+                    n.id,
+                    n.source_url,
+                    n.content,
+                    CASE
+                        WHEN :has_attachments = 1 THEN (
+                            SELECT COUNT(*)
+                            FROM news_attachments na
+                            WHERE na.news_id = n.id
+                        )
+                        ELSE 0
+                    END AS attachment_count
+                FROM news n
+                WHERE n.source = 'CafeF'
+            """),
+            {
+                "has_attachments": 1 if has_attachments else 0
+            },
         ).mappings().all()
 
         existing_by_url = {
@@ -874,18 +888,34 @@ def sync_news(
 
                 # Nếu bài đã có nội dung, không cần tải lại
                 # HTML mỗi lần cron chạy.
+                # Khởi tạo dữ liệu chi tiết
                 detail = {
                     "content": (
                         existing["content"]
-                        if existing
-                        else None
+                        if existing else None
                     ),
                     "source_name": None,
                     "attachments": [],
                 }
 
-                if not existing or not existing["content"]:
+                detail_fetched = False
+
+                # Cần tải chi tiết nếu:
+                # 1. Bài viết mới.
+                # 2. Bài viết chưa có nội dung.
+                # 3. Bài viết chưa có tệp đính kèm.
+                need_fetch_detail = (
+                    not existing
+                    or not existing["content"]
+                    or (
+                        has_attachments
+                        and existing["attachment_count"] == 0
+                    )
+                )
+
+                if need_fetch_detail:
                     detail = fetch_news_detail(source_url)
+                    detail_fetched = True
 
                     if detail.get("content"):
                         detail_success += 1
@@ -942,19 +972,20 @@ def sync_news(
                 if saved and is_new_news:
                     new_news_ids.append(saved.id)
 
-                if saved and has_attachments:
-                    # Tránh lặp file mỗi lần đồng bộ.
-                    db.execute(
-                        text("""
-                            DELETE FROM news_attachments
-                            WHERE news_id = :news_id
-                        """),
-                        {"news_id": saved.id},
-                    )
+                if saved and has_attachments and detail_fetched:
+                    attachments = detail.get("attachments") or []
 
-                    attachments = detail.get("attachments", [])
-
+                    # Chỉ bổ sung khi thực sự tìm thấy file mới.
+                    # Không xóa file cũ nếu CafeF trả về danh sách rỗng.
                     if attachments:
+                        db.execute(
+                            text("""
+                                DELETE FROM news_attachments
+                                WHERE news_id = :news_id
+                            """),
+                            {"news_id": saved.id},
+                        )
+
                         db.execute(
                             attachment_insert_sql,
                             [
@@ -964,6 +995,12 @@ def sync_news(
                                 }
                                 for attachment in attachments
                             ],
+                        )
+
+                        logging.info(
+                            "Đã cập nhật tệp đính kèm | news_id=%s | files=%s",
+                            saved.id,
+                            len(attachments),
                         )
 
                 inserted_or_updated += 1
