@@ -19,10 +19,10 @@ TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
 CAFEF_BASE_URL = "https://cafef.vn"
 CAFEF_REALTIME_URL = (
-    f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/RealtimePrice.ashx"
+    f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/PriceRealTimeHeader.ashx"
 )
 
-THRESHOLD_LEVELS = [3.0, 5.0, 7.0]
+THRESHOLD_LEVELS = [2.0, 5.0, 7.0]
 
 REQUEST_TIMEOUT = 10
 
@@ -64,21 +64,19 @@ def to_float(value):
         return None
 
 
+
 def get_cafef_realtime_price(session, symbol):
     """
-    Lấy giá realtime từ CafeF.
+    Lấy giá khớp gần nhất và giá tham chiếu từ CafeF.
 
-    Lưu ý:
-    Giá Gia và GiaThamChieu của CafeF được quy đổi từ nghìn đồng
-    sang đồng bằng cách nhân 1000.
+    CafeF trả giá theo nghìn đồng.
+    Quy đổi sang đồng bằng cách nhân 1000.
     """
 
     try:
         response = session.get(
             CAFEF_REALTIME_URL,
-            params={
-                "Symbol": symbol,
-            },
+            params={"Symbol": symbol},
             headers={
                 "User-Agent": "Mozilla/5.0",
                 "Referer": f"{CAFEF_BASE_URL}/",
@@ -92,53 +90,51 @@ def get_cafef_realtime_price(session, symbol):
 
         if not result.get("Success"):
             logging.warning(
-                "CafeF không trả dữ liệu thành công cho %s",
+                "CafeF không trả dữ liệu thành công cho %s: %s",
                 symbol,
+                result.get("Message"),
             )
             return None
 
         data = result.get("Data") or {}
 
-        # Giá hiện tại: ưu tiên Gia.
-        current_price_raw = None
+        # Giá khớp gần nhất
+        current_price = to_float(data.get("Gia"))
 
-        for key in (
-            "Gia",
-            "GiaHienTai",
-            "GiaKhopLenh",
-            "CurrentPrice",
-            "Price",
-        ):
-            if data.get(key) is not None:
-                current_price_raw = data.get(key)
-                break
-
-        reference_price_raw = data.get("GiaThamChieu")
-
-        current_price = to_float(current_price_raw)
-        reference_price = to_float(reference_price_raw)
+        # Giá tham chiếu
+        reference_price = to_float(data.get("GiaThamChieu"))
 
         if current_price is None or reference_price is None:
             logging.warning(
-                "Không tìm thấy giá hợp lệ của %s. "
-                "Các trường CafeF trả về: %s",
+                "Giá không hợp lệ của %s | Data=%s",
                 symbol,
-                list(data.keys()),
+                data,
             )
             return None
 
-        # CafeF trả giá theo nghìn đồng.
+        # Quy đổi từ nghìn đồng sang đồng
         current_price *= 1000
         reference_price *= 1000
+
+        change_percent = (
+            (current_price - reference_price)
+            / reference_price
+        ) * 100
+
+        logging.info(
+            "Realtime %s | Giá: %.0f | Tham chiếu: %.0f | "
+            "Biến động: %.2f%%",
+            symbol,
+            current_price,
+            reference_price,
+            change_percent,
+        )
 
         return {
             "symbol": symbol,
             "current_price": current_price,
             "reference_price": reference_price,
-            "change_percent": (
-                (current_price - reference_price)
-                / reference_price
-            ) * 100,
+            "change_percent": change_percent,
         }
 
     except requests.RequestException:
@@ -184,7 +180,7 @@ def check_price_alerts_watchlist():
                 INNER JOIN notification_settings ns
                     ON ns.user_id = w.user_id
                 WHERE ns.price_notification = 1
-                  AND s.status = 1
+                  AND s.status = 'ACTIVE'
             """)
         ).mappings().all()
 
