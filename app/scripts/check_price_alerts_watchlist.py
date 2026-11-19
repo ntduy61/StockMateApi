@@ -22,7 +22,7 @@ CAFEF_REALTIME_URL = (
     f"{CAFEF_BASE_URL}/du-lieu/Ajax/PageNew/PriceRealTimeHeader.ashx"
 )
 
-THRESHOLD_LEVELS = [2.0, 5.0, 7.0]
+THRESHOLD_LEVELS = [3.0, 5.0, 7.0]
 
 REQUEST_TIMEOUT = 10
 
