@@ -1061,39 +1061,39 @@ from urllib.parse import urlparse
 @router.get("/api/stocks/{symbol}/v2/documents/pdf")
 def get_stock_v2_document_pdf(
     symbol: str,
-    url: str = Query(...),
+    url: str = Query(..., description="URL PDF tài liệu"),
 ):
     try:
-        parsed = urlparse(url)
-
-        allowed_hosts = {
-            "cafef.vn",
-            "s.cafef.vn",
-        }
-
-        if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+        if not url.startswith("https://"):
             raise HTTPException(
                 status_code=400,
-                detail="URL tài liệu không hợp lệ",
+                detail="Chỉ hỗ trợ URL HTTPS",
             )
 
         response = requests.get(
             url,
             headers={
                 "User-Agent": "Mozilla/5.0",
-                "Referer": f"{CAFEF_BASE_URL}/",
+                "Referer": "https://cafef.vn/",
+                "Accept": "application/pdf,*/*",
             },
-            timeout=30,
+            timeout=60,
         )
 
         response.raise_for_status()
 
-        if "pdf" not in response.headers.get(
-            "Content-Type", ""
-        ).lower():
+        content_type = response.headers.get("Content-Type", "")
+
+        if "pdf" not in content_type.lower():
             raise HTTPException(
                 status_code=502,
-                detail="CafeF không trả về file PDF",
+                detail=f"URL không trả về PDF (Content-Type: {content_type})",
+            )
+
+        if not response.content:
+            raise HTTPException(
+                status_code=502,
+                detail="File PDF rỗng",
             )
 
         return StreamingResponse(
@@ -1103,14 +1103,18 @@ def get_stock_v2_document_pdf(
                 "Content-Disposition": (
                     f'inline; filename="{symbol.upper()}_report.pdf"'
                 ),
+                "Content-Length": str(len(response.content)),
                 "Cache-Control": "public, max-age=3600",
             },
         )
 
-    except requests.RequestException:
+    except HTTPException:
+        raise
+
+    except requests.RequestException as e:
         raise HTTPException(
             status_code=502,
-            detail="Không thể tải tài liệu từ CafeF",
+            detail=f"Không thể tải tài liệu: {str(e)}",
         )
 
 @router.get("/api/stocks/{symbol}/report_sumary")
