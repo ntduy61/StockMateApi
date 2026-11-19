@@ -790,6 +790,8 @@ def sync_watchlist_news(
             """)
         
 
+        # Chỉ thêm file nếu news_id + file_url chưa tồn tại.
+        # Không xóa các file đính kèm cũ.
         attachment_insert_sql = text("""
             INSERT INTO news_attachments (
                 news_id,
@@ -797,23 +799,49 @@ def sync_watchlist_news(
                 file_url,
                 file_type
             )
-            VALUES (
+            SELECT
                 :news_id,
                 :file_name,
                 :file_url,
                 :file_type
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM news_attachments
+                WHERE news_id = :news_id
+                AND file_url = :file_url
             )
         """)
 
         # Lấy danh sách bài hiện tại để chỉ tải
         # chi tiết bài mới hoặc bài chưa có nội dung.
-        existing_rows = db.execute(
-            text("""
-                SELECT id, source_url, content
-                FROM news
-                WHERE source = 'CafeF'
-            """)
-        ).mappings().all()
+        if has_attachments:
+            existing_rows = db.execute(
+                text("""
+                    SELECT
+                        n.id,
+                        n.source_url,
+                        n.content,
+                        (
+                            SELECT COUNT(*)
+                            FROM news_attachments na
+                            WHERE na.news_id = n.id
+                        ) AS attachment_count
+                    FROM news n
+                    WHERE n.source = 'CafeF'
+                """)
+            ).mappings().all()
+        else:
+            existing_rows = db.execute(
+                text("""
+                    SELECT
+                        id,
+                        source_url,
+                        content,
+                        0 AS attachment_count
+                    FROM news
+                    WHERE source = 'CafeF'
+                """)
+            ).mappings().all()
 
         existing_by_url = {
             normalize_url(row["source_url"]): row
@@ -847,11 +875,33 @@ def sync_watchlist_news(
                     "attachments": [],
                 }
 
-                if not existing or not existing["content"]:
-                    detail = fetch_news_detail(source_url)
+                # Tải lại chi tiết khi:
+                # - Bài viết chưa tồn tại.
+                # - Bài viết chưa có nội dung.
+                # - Bài viết có thể cần bổ sung file đính kèm.
+                #
+                # Để phát hiện chính xác file còn thiếu, cần đối chiếu
+                # danh sách file mới nhất trên CafeF.
+                should_fetch_detail = (
+                    not existing
+                    or not existing["content"]
+                    or has_attachments
+                )
 
-                    if detail.get("content"):
+                if should_fetch_detail:
+                    fetched_detail = fetch_news_detail(source_url)
+
+                    # Chỉ cập nhật content khi CafeF trả về nội dung hợp lệ.
+                    if fetched_detail.get("content"):
+                        detail["content"] = fetched_detail["content"]
                         detail_success += 1
+
+                    if fetched_detail.get("source_name"):
+                        detail["source_name"] = fetched_detail["source_name"]
+
+                    detail["attachments"] = (
+                        fetched_detail.get("attachments") or []
+                    )
 
                     if REQUEST_DELAY:
                         time.sleep(REQUEST_DELAY)
@@ -906,27 +956,30 @@ def sync_watchlist_news(
                     new_news_ids.append(saved.id)
 
                 if saved and has_attachments:
-                    # Tránh lặp file mỗi lần đồng bộ.
-                    db.execute(
-                        text("""
-                            DELETE FROM news_attachments
-                            WHERE news_id = :news_id
-                        """),
-                        {"news_id": saved.id},
-                    )
-
                     attachments = detail.get("attachments", [])
 
-                    if attachments:
-                        db.execute(
+                    added_attachments = 0
+
+                    for attachment in attachments:
+                        result = db.execute(
                             attachment_insert_sql,
-                            [
-                                {
-                                    "news_id": saved.id,
-                                    **attachment,
-                                }
-                                for attachment in attachments
-                            ],
+                            {
+                                "news_id": saved.id,
+                                "file_name": attachment["file_name"],
+                                "file_url": attachment["file_url"],
+                                "file_type": attachment["file_type"],
+                            },
+                        )
+
+                        added_attachments += result.rowcount or 0
+
+                    if attachments:
+                        logging.info(
+                            "News ID=%s | Tìm thấy=%s file | "
+                            "Bổ sung mới=%s file",
+                            saved.id,
+                            len(attachments),
+                            added_attachments,
                         )
 
                 inserted_or_updated += 1
