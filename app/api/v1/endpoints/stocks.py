@@ -14,7 +14,7 @@ from app.utils.serializers import to_dict
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 import logging
-
+import json
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
@@ -1117,6 +1117,7 @@ def get_stock_v2_document_pdf(
             detail=f"Không thể tải tài liệu: {str(e)}",
         )
 
+
 @router.get("/api/stocks/{symbol}/report_sumary")
 def get_Report_Summary(
     symbol: str,
@@ -1125,66 +1126,202 @@ def get_Report_Summary(
     report_type: str = Query("ALL", alias="reportType"),
     type_time: str = Query("QUY", alias="TypeTime"),
 ):
+    symbol = symbol.strip().upper()
+    report_type = report_type.strip().upper()
+    type_time = type_time.strip().upper()
 
-    url = "https://apiweb.cafef.vn/api/v1/BCTC/GetReportSummary"
-
-    params = {
-        "symbol": symbol.upper(),
-        "pageIndex": page_index,
-        "pageSize": page_size,
-        "reportType": report_type,
-        "TypeTime": type_time,
-    }
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": f"{CAFEF_BASE_URL}/du-lieu/{symbol.upper()}.chn",
-        "Origin": f"{CAFEF_BASE_URL}",
-    }
+    db_generator = get_db()
+    db = next(db_generator)
 
     try:
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=20,
-        )
-        response.raise_for_status()
+        # ====================================================
+        # 1. LẤY THÔNG TIN CACHE
+        # ====================================================
 
-        result = response.json()
+        cache_rows = db.execute(
+            text("""
+                SELECT raw_json
+                FROM financial_report_raw_cache
+                WHERE symbol = :symbol
+                  AND report_type = :report_type
+                  AND type_time = :type_time
+                ORDER BY page_index ASC
+            """),
+            {
+                "symbol": symbol,
+                "report_type": report_type,
+                "type_time": type_time,
+            },
+        ).mappings().all()
 
-        if not result.get("isSuccess"):
+        if not cache_rows:
             return {
                 "symbol": symbol,
+                "count": 0,
+                "unit": None,
+                "listType": [],
+                "templace": [],
                 "data": [],
-                "error": "CafeF không trả về dữ liệu thành công",
+                "error": "Chưa có dữ liệu báo cáo tài chính trong hệ thống",
             }
 
-        value = result.get("value") or {}
+        # ====================================================
+        # 2. GỘP DỮ LIỆU CÁC TRANG ĐÃ ĐỒNG BỘ
+        # ====================================================
+
+        merged_data = {}
+        merged_templates = {}
+        count = 0
+        unit = None
+        list_type = []
+
+        for row in cache_rows:
+
+            raw_data = row["raw_json"]
+
+            if isinstance(raw_data, str):
+                raw_data = json.loads(raw_data)
+
+            value = raw_data.get("value") or {}
+
+            count = max(
+                count,
+                int(value.get("count") or 0),
+            )
+
+            if unit is None:
+                unit = value.get("unit")
+
+            for item in value.get("listType", []) or []:
+                if item not in list_type:
+                    list_type.append(item)
+
+            # Gộp template theo mã nhóm báo cáo.
+            for template in value.get("templace", []) or []:
+
+                if not isinstance(template, dict):
+                    continue
+
+                code = template.get("code")
+
+                if code:
+                    merged_templates[str(code)] = template
+
+            # Gộp dữ liệu theo KQKD, CDKT...
+            for report_group in value.get("data", []) or []:
+
+                if not isinstance(report_group, dict):
+                    continue
+
+                report_code = report_group.get("code")
+
+                if not report_code:
+                    continue
+
+                report_code = str(report_code)
+
+                if report_code not in merged_data:
+                    merged_data[report_code] = {
+                        "code": report_code,
+                        "name": report_group.get("name"),
+                        "data": [],
+                    }
+
+                existing_periods = {
+                    (
+                        p.get("year"),
+                        p.get("quater"),
+                        p.get("type"),
+                        p.get("time"),
+                    )
+                    for p in merged_data[report_code]["data"]
+                }
+
+                for period in report_group.get("data", []) or []:
+
+                    if not isinstance(period, dict):
+                        continue
+
+                    period_key = (
+                        period.get("year"),
+                        period.get("quater"),
+                        period.get("type"),
+                        period.get("time"),
+                    )
+
+                    if period_key not in existing_periods:
+                        merged_data[report_code]["data"].append(period)
+                        existing_periods.add(period_key)
+
+        # ====================================================
+        # 3. SẮP XẾP CÁC KỲ BÁO CÁO
+        # ====================================================
+
+        for report_group in merged_data.values():
+
+            report_group["data"].sort(
+                key=lambda p: (
+                    int(p.get("year") or 0),
+                    int(p.get("quater") or 0),
+                ),
+                reverse=True,
+            )
+
+        # ====================================================
+        # 4. PHÂN TRANG
+        # ====================================================
+
+        # CafeF phân trang theo nhóm báo cáo trong value.data.
+        all_data = list(merged_data.values())
+
+        total_groups = len(all_data)
+
+        start = (page_index - 1) * page_size
+        end = start + page_size
+
+        paginated_data = all_data[start:end]
+
+        # ====================================================
+        # 5. TRẢ KẾT QUẢ
+        # ====================================================
 
         return {
             "symbol": symbol,
-            "count": value.get("count", 0),
-            "unit": value.get("unit"),
-            "listType": value.get("listType", []),
-            "templace": value.get("templace", []),
-            "data": value.get("data", []),
+            "count": total_groups,
+            "totalCount": count,
+            "pageIndex": page_index,
+            "pageSize": page_size,
+            "totalPages": (
+                (total_groups + page_size - 1) // page_size
+            ),
+            "unit": unit,
+            "listType": list_type,
+            "templace": list(merged_templates.values()),
+            "data": paginated_data,
         }
 
-    except requests.RequestException as e:
+    except Exception as e:
+
+        logger.exception(
+            "[%s] Lỗi lấy Report Summary từ database: %s",
+            symbol,
+            str(e),
+        )
+
         return {
             "symbol": symbol,
             "data": [],
             "error": str(e),
         }
 
-    except ValueError as e:
-        return {
-            "symbol": symbol,
-            "data": [],
-            "error": f"Không thể đọc JSON từ CafeF: {e}",
-        }
+    finally:
+        db.close()
+
+        try:
+            db_generator.close()
+        except Exception:
+            pass
+
 
 
 
