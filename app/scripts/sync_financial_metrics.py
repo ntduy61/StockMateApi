@@ -1726,7 +1726,7 @@ def sync_financial_report_summary():
 
 def main():
     # 1. Đồng bộ Financial Indicators như hiện tại.
-    #sync_financial_metrics()
+    sync_financial_metrics()
 
     # 2. Đồng bộ thêm Báo cáo tài chính.
     sync_financial_report_summary()
